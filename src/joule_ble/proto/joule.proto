@@ -1,0 +1,947 @@
+syntax = "proto2";
+
+package joule;
+
+enum UnavailableReason {
+  RECIPIENT_OFFLINE = 0;
+  UNAUTHORIZED_RECIPIENT = 1;
+}
+
+enum Result {
+  CS_SUCCESS = 0;
+  CS_ERROR_SVC_HANDLER_MISSING = 1;
+  CS_ERROR_SOFTDEVICE_NOT_ENABLED = 2;
+  CS_ERROR_INTERNAL = 3;
+  CS_ERROR_NO_MEM = 4;
+  CS_ERROR_NOT_FOUND = 5;
+  CS_ERROR_NOT_SUPPORTED = 6;
+  CS_ERROR_INVALID_PARAM = 7;
+  CS_ERROR_INVALID_STATE = 8;
+  CS_ERROR_INVALID_LENGTH = 9;
+  CS_ERROR_INVALID_FLAGS = 10;
+  CS_ERROR_INVALID_DATA = 11;
+  CS_ERROR_DATA_SIZE = 12;
+  CS_ERROR_TIMEOUT = 13;
+  CS_ERROR_NULL = 14;
+  CS_ERROR_FORBIDDEN = 15;
+  CS_ERROR_INVALID_ADDR = 16;
+  CS_ERROR_BUSY = 17;
+  CS_ERROR_IO_FAILED = 18;
+  CS_ERROR_ALREADY_EXISTS = 19;
+  CS_ERROR_END_OF_FILE = 20;
+  CS_ERROR_NOT_CONNECTED = 21;
+  CS_ERROR_UNKNOWN_RPC_MSG = 22;
+  CS_ERROR_WIFI_DUPLICATE_SCAN_RESULT = 23;
+  CS_ERROR_WIFI_KEY_ERROR = 24;
+  CS_ERROR_WIFI_INVALID_ROLE = 25;
+  CS_ERROR_WIFI_INVALID_SEC_TYPE = 26;
+  CS_ERROR_WIFI_INVALID_WEP_IND = 27;
+  CS_ERROR_WIFI_ALREADY_DISCONN = 28;
+  CS_ERROR_WIFI_NOT_CONN = 29;
+  CS_ERROR_WIFI_DISCONNECT = 30;
+  CS_ERROR_WIFI_INVALID_PWD = 31;
+  CS_ERROR_WIFI_RX_BUFF = 32;
+  CS_ERROR_WIFI_AP_TERM_CONN = 33;
+  CS_ERROR_INVALID_SOCKET = 34;
+  CS_ERROR_IO_IN_PROGRESS = 35;
+  CS_ERROR_GEN_SOCK_FAILURE = 36;
+  CS_ERROR_PLACEHOLDER_37 = 37;
+  CS_ERROR_DNS_FAILURE = 38;
+  CS_ERROR_CONNECT_FAILURE = 39;
+  CS_ERROR_NO_DATA = 40;
+  CS_ERROR_EINVAL = 41;
+  CS_ERROR_SOCK_EWOULDBLOCK = 42;
+  CS_ERROR_SOCK_GEN_FAILURE = 43;
+  CS_ERROR_SOCK_ECLOSE = 44;
+  CS_ERROR_WEB_SOCKET_NOT_AUTHORIZED = 45;
+  CS_ERROR_WEB_SOCKET_UPGRADE_FAILURE = 46;
+  CS_ERROR_WEB_SOCKET_DATA_SIZE = 47;
+  CS_ERROR_WEB_SOCKET_PARSE_ERROR = 48;
+  CS_ERROR_WEB_SOCKET_BUFF_TOO_SMALL = 49;
+  CS_ERROR_WEB_SOCKET_NO_DATA = 50;
+  CS_ERROR_WEB_SOCKET_CONNECTION_CLOSING = 51;
+  CS_ERROR_WEB_SOCKET_UNHANDLED_OPCODE = 52;
+  CS_ERROR_SPI_INVALID_FRAME = 53;
+  CS_ERROR_SPI_NO_DATA = 54;
+  CS_ERROR_SPI_BUSY = 55;
+  CS_ERROR_SPI_QUEUE_FULL = 56;
+  CS_ERROR_QUEUE_WOULDBLOCK = 57;
+  CS_ERROR_STREAM_MESSAGE_DECODE = 58;
+  CS_ERROR_WIFI_IN_PROGRESS = 59;
+  CS_ERROR_TLS_FAILURE = 60;
+  CS_ERROR_TLS_INVALID_CERT = 61;
+}
+
+enum TurboCookState {
+  NO_TURBO = 0;
+  TURBO_ENABLED = 1;
+  TURBO_TIMED_OUT = 2;
+}
+
+enum ProgramType {
+  MANUAL = 0;
+  AUTOMATIC = 1;
+}
+
+enum ProgramStep {
+  UNKNOWN = 0;
+  PRE_HEAT = 1;
+  WAIT_FOR_FOOD = 2;
+  COOK = 3;
+  WAIT_FOR_REMOVE_FOOD = 4;
+  ERROR = 5;
+  WAIT_FOR_UPDATE = 6;
+}
+
+enum ErrorState {
+  NO_ERROR = 0;
+  SOFT_ERROR = 1;
+  HARD_ERROR = 2;
+}
+
+enum LedColor {
+  LED_COLOR_RED = 0;
+  LED_COLOR_GREEN = 1;
+  LED_COLOR_BLUE = 2;
+  LED_COLOR_WHITE = 3;
+  LED_COLOR_ORANGE = 4;
+  LED_COLOR_YELLOW = 5;
+  LED_COLOR_BLACK = 6;
+  LED_COLOR_PURPLE = 7;
+}
+
+enum LedPattern {
+  LED_PATTERN_BLINK = 0;
+  LED_PATTERN_BREATHE = 1;
+  LED_PATTERN_DOUBLE_BLINK = 2;
+  LED_PATTERN_DOUBLE_PULSE = 3;
+  LED_PATTERN_SOLID = 4;
+}
+
+enum UpdateProgramType {
+  REGULAR = 1;
+  TURBO = 2;
+}
+
+enum EventType {
+  NO_EVENT = 0;
+  HW_FAILURE = 1;
+  STOP_PROGRAM = 2;
+}
+
+enum EventReason {
+  NO_REASON = 0;
+  BUTTON_PRESSED = 2;
+  LOW_WATER_LEVEL = 3;
+  TIPPED_OVER = 4;
+  OVERHEATING = 5;
+  POWER_LOSS = 6;
+  STUCK_MOTOR = 12;
+  FIRMWARE_CRASH = 14;
+  HEATER_THERMISTOR = 7;
+  BATH_THERMISTOR = 8;
+  PRESSURE_SENSOR = 9;
+  ACCELEROMETER = 10;
+  BAD_MOTOR = 11;
+  BAD_HEATER = 13;
+  HARDWARE_FAILURE = 1;
+}
+
+enum FaultReason {
+  HW_FAULT_TYPE_NONE = 0;
+  HW_FAULT_TYPE_UNKNOWN = 1;
+  HW_FAULT_TYPE_OFF = 2;
+  HW_FAULT_TYPE_ARM_DOUBLE = 3;
+  HW_FAULT_TYPE_NRF_WDT = 4;
+  HW_FAULT_TYPE_NRF_PIN_RESET = 5;
+  HW_FAULT_TYPE_ARM_HARD = 6;
+  HW_FAULT_TYPE_NRF_WDT_TRAP = 7;
+  HW_FAULT_TYPE_NRF_SD = 8;
+}
+
+enum SecurityType {
+  OPEN = 0;
+  WEP = 1;
+  WPA = 2;
+  WPS = 3;
+  UNKNOWN_WIFI = 4;
+  WPA2 = 5;
+  WPA_WPA2 = 6;
+}
+
+enum WifiConnectionStatus {
+  WIFI_IDLE = 0;
+  WIFI_CONNECTING = 1;
+  WIFI_WRONG_PASSWORD = 2;
+  WIFI_NO_AP_FOUND = 3;
+  WIFI_CONNECT_FAIL = 4;
+  WIFI_GOT_IP = 5;
+}
+
+enum WifiDFUDownloadTFTPStatus {
+  API_ERROR = -32;
+  FAILED = 0;
+  SUCCESS = 1;
+  ONGOING = 2;
+  FAILED_TIMEOUT = 3;
+  FAILED_ROUTING = 4;
+  FAILED_SHASUM = 5;
+  FAILED_SLOT_ACTIVE = 6;
+  FAILED_SLOT_FACTORY = 7;
+  FAILED_SLOT_INVALID = 8;
+  FAILED_BAD_IMAGE = 9;
+  FAILED_BAD_ADDRESS = 10;
+  FAILED_BUSY = 11;
+}
+
+enum FeedType {
+  COOK_DATA = 1;
+  DEBUG = 2;
+  NETWORK_BLUETOOTH = 3;
+  NETWORK_WIFI = 4;
+}
+
+enum LogLevel {
+  LOG_DEBUG = 0;
+  LOG_INFO = 1;
+  LOG_WARNING = 2;
+  LOG_ERROR = 3;
+  LOG_FATAL = 4;
+}
+
+enum BootModeType {
+  SOFTDEVICE_BOOT_MODE = 1;
+  BOOTLOADER_BOOT_MODE = 2;
+  APPLICATION_BOOT_MODE = 3;
+}
+
+enum FileType {
+  APPLICATION_FIRMWARE = 1;
+  SOFTDEVICE_FIRMWARE = 2;
+  WIFI_FIRMWARE = 3;
+  CERTIFICATE_FIRMWARE = 4;
+  BOOTLOADER_FIRMWARE = 5;
+}
+
+enum UsageMetric {
+  MOTOR_RUNNING_MINS_LT = 0;
+  TOTAL_REVOLUTIONS = 1;
+  MOTOR_RUNNING_MINS_LT_30C = 2;
+  MOTOR_RUNNING_MINS_LT_35C = 3;
+  MOTOR_RUNNING_MINS_LT_40C = 4;
+  MOTOR_RUNNING_MINS_LT_45C = 5;
+  MOTOR_RUNNING_MINS_LT_50C = 6;
+  MOTOR_RUNNING_MINS_LT_55C = 7;
+  MOTOR_RUNNING_MINS_LT_60C = 8;
+  MOTOR_RUNNING_MINS_LT_65C = 9;
+  MOTOR_RUNNING_MINS_LT_70C = 10;
+  MOTOR_RUNNING_MINS_LT_75C = 11;
+  MOTOR_RUNNING_MINS_LT_80C = 12;
+  MOTOR_RUNNING_MINS_LT_85C = 13;
+  MOTOR_RUNNING_MINS_LT_90C = 14;
+  MOTOR_RUNNING_MINS_LT_95C = 15;
+  MOTOR_RUNNING_MINS_GT_95C = 16;
+  MOTOR_RPM_MEAN = 17;
+  MOTOR_RPM_VARIANCE = 18;
+  MOTOR_CURRENT_MEAN = 19;
+  MOTOR_CURRENT_VARIANCE = 20;
+  HEATER_MEAN = 21;
+  HEATER_VARIANCE = 22;
+  PRESSURE_MEAN = 23;
+  PRESSURE_VARIANCE = 24;
+  BATH_TEMP_MEAN = 25;
+  BATH_TEMP_VARIANCE = 26;
+  NUM_BUTTON_PRESSES = 27;
+  NUM_COOKS_INTERRUPTED = 28;
+  NUM_OOW_ERRORS = 29;
+  NUM_OVERTEMP_ERRORS = 30;
+  NUM_MOTOR_OVER_CURRENT_ERRORS = 31;
+  NUM_ACCELEROMETER_TRIPS = 32;
+  NUM_MOTOR_STALLS = 33;
+}
+
+enum JouleHardwareOptions {
+  JOULE_HARDWARE_OPTIONS_STAINLESS = 1;
+  JOULE_HARDWARE_OPTIONS_WHITE = 2;
+  JOULE_HARDWARE_OPTIONS_ROSE_GOLD = 4;
+  JOULE_HARDWARE_OPTIONS_230_VOLT = 256;
+  JOULE_HARDWARE_OPTIONS_TYPE_G_PLUG = 512;
+  JOULE_HARDWARE_OPTIONS_TYPE_CEE7_PLUG = 1024;
+  JOULE_HARDWARE_OPTIONS_TYPE_J_PLUG = 2048;
+  JOULE_HARDWARE_OPTIONS_UL_CERTIFIED = 65536;
+  JOULE_HARDWARE_OPTIONS_CE_CERTIFIED = 131072;
+}
+
+message StreamMessage {
+  optional fixed32 handle = 1;
+  optional bool end = 4;
+  optional bytes senderAddress = 5;
+  optional bytes recipientAddress = 6;
+  optional Noop noop = 14;
+  optional UnhandledMessageReply unhandledMessageReply = 15;
+  optional ConnectionReadyReply connectionReadyReply = 16;
+  optional RecipientUnavailableReply recipientUnavailableReply = 17;
+  optional Ping ping = 18;
+  optional Pong pong = 19;
+  optional ListStreamsRequest listStreamsRequest = 20;
+  optional ListStreamsReply listStreamsReply = 21;
+  optional ListOperationsRequest listOperationsRequest = 30;
+  optional ListOperationsReply listOperationsReply = 31;
+  optional StartProgramRequest startProgramRequest = 50;
+  optional StartProgramReply startProgramReply = 51;
+  optional UpdateProgramRequest updateProgramRequest = 52;
+  optional UpdateProgramReply updateProgramReply = 53;
+  optional GetCookEventsRequest getCookEventsRequest = 54;
+  optional GetCookEventsReply getCookEventsReply = 55;
+  optional StopCirculatorRequest stopCirculatorRequest = 60;
+  optional StopCirculatorReply stopCirculatorReply = 61;
+  optional DropFoodRequest dropFoodRequest = 102;
+  optional DropFoodReply dropFoodReply = 103;
+  optional BeginLiveFeed beginLiveFeed = 70;
+  optional BeginLiveFeedReply beginLiveFeedReply = 71;
+  optional KeepAlive keepAlive = 72;
+  optional RetransmitFeedRequest retransmitFeedRequest = 80;
+  optional RetransmitFeedReply retransmitFeedReply = 81;
+  optional CirculatorDataPoint circulatorDataPoint = 90;
+  optional DebugMessage debugMessage = 91;
+  optional ListRecentEventsRequest listRecentEventsRequest = 92;
+  optional ListRecentEventsReply listRecentEventsReply = 93;
+  optional DescribeFeedRequest describeFeedRequest = 95;
+  optional DescribeFeedReply describeFeedReply = 96;
+  optional ListFeedsRequest listFeedsRequest = 100;
+  optional ListFeedsReply listFeedsReply = 101;
+  optional ClearErrorRequest clearErrorRequest = 104;
+  optional ClearErrorReply clearErrorReply = 105;
+  optional ListWifiRequest listWifiRequest = 41;
+  optional ListWifiReply listWifiReply = 42;
+  optional ConnectWifiRequest connectWifiRequest = 43;
+  optional ConnectWifiReply connectWifiReply = 44;
+  optional ListWifiProfileRequest listWifiProfileRequest = 45;
+  optional ListWifiProfileReply listWifiProfileReply = 47;
+  optional ForgetWifiProfileRequest forgetWifiProfileRequest = 48;
+  optional ForgetWifiProfileReply forgetWifiProfileReply = 49;
+  optional EnterBootModeRequest enterBootModeRequest = 110;
+  optional EnterBootModeReply enterBootModeReply = 111;
+  optional StartFileTransferRequest startFileTransferRequest = 112;
+  optional StartFileTransferReply startFileTransferReply = 113;
+  optional TransferFileBlockRequest transferFileBlockRequest = 114;
+  optional TransferFileBlockReply transferFileBlockReply = 115;
+  optional TransferFileComplete transferFileComplete = 116;
+  optional StartFileReceiveRequest startFileReceiveRequest = 117;
+  optional StartFileReceiveReply startFileReceiveReply = 118;
+  optional StartKeyExchangeRequest startKeyExchangeRequest = 120;
+  optional StartKeyExchangeReply startKeyExchangeReply = 121;
+  optional CancelKeyExchangeRequest cancelKeyExchangeRequest = 125;
+  optional CancelKeyExchangeReply cancelKeyExchangeReply = 126;
+  optional SubmitKeyRequest submitKeyRequest = 130;
+  optional SubmitKeyReply submitKeyReply = 131;
+  optional SubmitBearerAuthTokenRequest submitBearerAuthTokenRequest = 132;
+  optional SubmitBearerAuthTokenReply submitBearerAuthTokenReply = 133;
+  optional RenameCirculatorRequest renameCirculatorRequest = 150;
+  optional RenameCirculatorReply renameCirculatorReply = 151;
+  optional IdentifyCirculatorRequest identifyCirculatorRequest = 152;
+  optional IdentifyCirculatorReply identifyCirculatorReply = 153;
+  optional SetMessagingAddressRequest setMessagingAddressRequest = 154;
+  optional SetMessagingAddressReply setMessagingAddressReply = 155;
+  optional DisplayLedRequest displayLedRequest = 156;
+  optional DisplayLedReply displayLedReply = 157;
+  optional DisconnectWifiRequest disconnectWifiRequest = 160;
+  optional DisconnectWifiReply disconnectWifiReply = 161;
+  optional WifiDFUStatusRequest wifiDFUStatusRequest = 170;
+  optional WifiDFUStatusReply wifiDFUStatusReply = 171;
+  optional WifiDFUSetFirmware wifiDFUSetFirmware = 172;
+  optional WifiDFUDownloadTFTPRequest wifiDFUDownloadTFTPRequest = 173;
+  optional WifiDFUDownloadTFTPResponse wifiDFUDownloadTFTPResponse = 174;
+  optional GetLimitsRequest getLimitsRequest = 180;
+  optional GetLimitsReply getLimitsReply = 181;
+  optional ButtonPressRequest buttonPressRequest = 190;
+  optional ButtonPressReply buttonPressReply = 191;
+  optional CancelButtonPressRequest cancelButtonPressRequest = 192;
+  optional CancelButtonPressReply cancelButtonPressReply = 193;
+  optional FactoryResetRequest factoryResetRequest = 1000;
+  optional FactoryResetReply factoryResetReply = 1001;
+  optional DeviceRestartRequest deviceRestartRequest = 1002;
+  optional DeviceRestartReply deviceRestartReply = 1003;
+  optional TestResetRequest testResetRequest = 1004;
+  optional TestResetReply testResetReply = 1005;
+  optional ForgetDevicePairingRequest forgetDevicePairingRequest = 1006;
+  optional ForgetDevicePairingReply forgetDevicePairingReply = 1007;
+  optional SetSimulatorRequest setSimulatorRequest = 1008;
+  optional SetSimulatorReply setSimulatorReply = 1009;
+  optional GetSimulatorRequest getSimulatorRequest = 1010;
+  optional GetSimulatorReply getSimulatorReply = 1011;
+  optional SetHardwareCoeffsRequest setHardwareCoeffsRequest = 1020;
+  optional SetHardwareCoeffsReply setHardwareCoeffsReply = 1021;
+  optional GetHardwareCoeffsRequest getHardwareCoeffsRequest = 1022;
+  optional GetHardwareCoeffsReply getHardwareCoeffsReply = 1023;
+  optional GetUsageDataRequest getUsageDataRequest = 1030;
+  optional GetUsageDataReply getUsageDataReply = 1031;
+  optional ResetUsageDataRequest resetUsageDataRequest = 1032;
+  optional ResetUsageDataReply resetUsageDataReply = 1033;
+  optional GetCrashDataRequest getCrashDataRequest = 1040;
+  optional GetCrashDataReply getCrashDataReply = 1041;
+  optional ResetCrashDataRequest resetCrashDataRequest = 1042;
+  optional ResetCrashDataReply resetCrashDataReply = 1043;
+}
+
+message UnhandledMessageReply {
+}
+
+message ConnectionReadyReply {
+}
+
+message RecipientUnavailableReply {
+  optional bytes recipientAddress = 1;
+  optional UnavailableReason unavailableReason = 2;
+}
+
+message ListStreamsRequest {
+}
+
+message ListStreamsReply {
+  optional bytes encodedStreamMessage = 1000;
+}
+
+message ListOperationsRequest {
+}
+
+message ListOperationsReply {
+  optional string name = 1000;
+}
+
+message IdentifyCirculatorRequest {
+}
+
+message IdentifyCirculatorReply {
+  optional string name = 1;
+  optional string firmwareVersion = 2;
+  optional string hardwareVersion = 3;
+  optional string serialNumber = 4;
+  optional string bleMacAddress = 5;
+  optional string softdeviceVersion = 6;
+  optional string bootloaderVersion = 7;
+  optional string appFirmwareVersion = 8;
+  optional string espFirmwareVersion = 9;
+  optional string certificateVersion = 10;
+  optional string modelNumber = 11;
+  optional uint32 apiVersion = 12;
+  optional uint32 hardwareOptions = 13;
+  optional uint32 buildDate = 14;
+  optional string pcbaRevision = 15;
+}
+
+message RenameCirculatorRequest {
+  optional string name = 1;
+}
+
+message RenameCirculatorReply {
+  optional Result result = 1;
+  optional string name = 2;
+}
+
+message SetMessagingAddressRequest {
+  optional bytes address = 1;
+}
+
+message SetMessagingAddressReply {
+  optional Result result = 1;
+}
+
+message DisplayLedRequest {
+  optional LedColor ledColor = 1;
+  optional LedPattern ledPattern = 2;
+  optional uint32 durationMilliseconds = 3;
+}
+
+message DisplayLedReply {
+  optional Result result = 1;
+}
+
+message ButtonPressRequest {
+  optional LedColor ledColor = 1;
+  optional LedPattern ledPattern = 2;
+  optional uint32 durationMilliseconds = 3;
+}
+
+message ButtonPressReply {
+  optional Result result = 1;
+}
+
+message CancelButtonPressRequest {
+}
+
+message CancelButtonPressReply {
+  optional Result result = 1;
+}
+
+message Noop {
+}
+
+message Ping {
+}
+
+message Pong {
+}
+
+message KeepAlive {
+}
+
+message CirculatorProgram {
+  optional float setPoint = 1;
+  optional uint32 cookTime = 2;
+  optional uint32 delayedStart = 3;
+  optional float holdingTemperature = 4;
+  optional ProgramType programType = 5;
+  optional ProgramMetadata programMetadata = 6;
+  optional TurboCookState turboCookState = 7;
+  optional uint32 thicknessMicrometers = 8;
+  optional uint32 weightMilligrams = 9;
+}
+
+message ProgramMetadata {
+  optional string guideId = 1;
+  optional string programId = 2;
+  optional string timerId = 3;
+  optional string cookId = 4;
+}
+
+message StartProgramRequest {
+  optional CirculatorProgram circulatorProgram = 1;
+  optional uint32 feedId = 2;
+  optional uint32 sequenceNumber = 3;
+}
+
+message StartProgramReply {
+  optional Result result = 1;
+}
+
+message StopCirculatorRequest {
+  optional uint32 feedId = 2;
+  optional uint32 sequenceNumber = 3;
+}
+
+message StopCirculatorReply {
+  optional Result result = 1;
+}
+
+message DropFoodRequest {
+}
+
+message DropFoodReply {
+  optional Result result = 1;
+}
+
+message UpdateProgramRequest {
+  optional uint32 cookTime = 1;
+  optional float setPoint = 2;
+  optional uint32 setPointTime = 3;
+  optional UpdateProgramType updateProgramType = 4;
+}
+
+message UpdateProgramReply {
+  optional Result result = 1;
+}
+
+message CookEvents {
+  optional uint32 programStartedTimestamp = 1;
+  optional uint32 dropFoodTimestamp = 2;
+  optional uint32 setPointReachedTimestamp = 3;
+  optional uint32 cookFinishedTimestamp = 4;
+}
+
+message GetCookEventsRequest {
+}
+
+message GetCookEventsReply {
+  optional Result result = 1;
+  optional CookEvents cookEvents = 2;
+}
+
+message ListRecentEventsRequest {
+}
+
+message ListRecentEventsReply {
+  optional EventType eventType = 1;
+  optional EventReason eventReason = 2;
+  optional uint32 eventTimestamp = 3;
+  optional uint32 feedId = 4;
+  optional uint32 sequenceNumber = 5;
+  optional FaultReason faultType = 6;
+  optional uint32 appLR = 7;
+  optional uint32 appPC = 8;
+  optional uint32 appSP = 9;
+  optional uint32 nrfResetReason = 10;
+  optional uint32 faultCount = 11;
+  optional uint32 sdPC = 12;
+  optional uint32 sdLn = 13;
+  optional string sdFn = 14;
+  optional uint32 nrfGPregret = 15;
+}
+
+message ClearErrorRequest {
+}
+
+message ClearErrorReply {
+  optional Result result = 1;
+}
+
+message ListWifiRequest {
+  optional bool start = 1;
+}
+
+message ListWifiReply {
+  optional string SSID = 1000;
+  optional SecurityType securityType = 1001;
+  optional sint32 rssi = 1002;
+}
+
+message ConnectWifiRequest {
+  optional string SSID = 1;
+  optional string passphrase = 2;
+  optional SecurityType securityType = 3;
+}
+
+message ConnectWifiReply {
+  optional Result result = 1;
+}
+
+message ListWifiProfileRequest {
+  optional int32 index = 1;
+}
+
+message ListWifiProfileReply {
+  optional Result result = 1;
+  optional string SSID = 2;
+  optional bool bearerTokenSet = 3;
+  optional WifiConnectionStatus connectionStatus = 4;
+  optional uint32 timeSinceLastPacketMS = 5;
+  optional uint32 cloudStatus = 6;
+  optional bytes MACADDR = 7;
+}
+
+message ForgetWifiProfileRequest {
+  optional int32 index = 1;
+}
+
+message ForgetWifiProfileReply {
+  optional Result result = 1;
+}
+
+message DisconnectWifiRequest {
+}
+
+message DisconnectWifiReply {
+  optional Result result = 1;
+}
+
+message WifiDFUStatusRequest {
+}
+
+message WifiDFUSlotStatus {
+  optional bool valid = 1;
+  optional bytes sha256 = 2;
+}
+
+message WifiDFUStatusReply {
+  optional Result result = 1;
+  optional uint32 running_slot = 2;
+  repeated WifiDFUSlotStatus slot = 3;
+}
+
+message WifiDFUSetFirmware {
+  optional bytes sha256 = 1;
+  optional bool doNotRestart = 2;
+}
+
+message WifiDFUDownloadTFTPRequest {
+  optional string host = 1;
+  optional string filename = 2;
+  optional bytes sha256 = 3;
+  optional bool useHTTP = 4;
+}
+
+message WifiDFUDownloadTFTPResponse {
+  optional WifiDFUDownloadTFTPStatus status = 1;
+  optional uint32 bytes_read = 2;
+}
+
+message DescribeFeedRequest {
+  optional uint32 feedId = 1;
+}
+
+message DescribeFeedReply {
+  optional uint32 feedId = 1;
+  optional CirculatorProgram circulatorProgram = 2;
+  optional Result result = 3;
+}
+
+message ListFeedsRequest {
+}
+
+message ListFeedsReply {
+  optional uint32 feedId = 1;
+  optional FeedType feedType = 2;
+  optional bool active = 3;
+  optional Result result = 4;
+}
+
+message BeginLiveFeed {
+  optional FeedType feedType = 1;
+}
+
+message BeginLiveFeedReply {
+  optional Result result = 1;
+}
+
+message BeginLiveFeedError {
+  enum LiveFeedErrorType {
+    NO_ACTIVE_FEED = 1;
+  }
+
+}
+
+message CirculatorDataPoint {
+  optional uint32 feedId = 1;
+  optional uint32 sequenceNumber = 2;
+  optional uint32 timestamp = 3;
+  optional ErrorState errorState = 4;
+  optional float bathTemp = 10;
+  optional ProgramStep programStep = 11;
+  optional uint32 timeRemaining = 12;
+  optional float heaterTemp = 50;
+  optional float upperBoardTemp = 52;
+  optional float lowerBoardTemp = 53;
+  optional int32 motorRPM = 54;
+  optional float heaterPWM = 55;
+  optional float motorVoltage = 56;
+  optional float motorPWM = 57;
+  optional float motorCurrent = 58;
+  optional float pressure = 61;
+  optional uint32 motorFaultFlag = 63;
+  optional float motorPeakCurrent = 64;
+  optional uint32 cookStartTimestamp = 65;
+}
+
+message DebugMessage {
+  optional uint32 feedId = 1;
+  optional uint32 sequenceNumber = 2;
+  optional uint32 timestamp = 3;
+  optional LogLevel logLevel = 4;
+  optional string source = 5;
+  optional string event = 6;
+  optional string message = 10;
+}
+
+message RetransmitFeedRequest {
+  optional uint32 feedId = 1;
+  optional uint32 seqStart = 2;
+  optional uint32 seqEnd = 3;
+}
+
+message RetransmitFeedReply {
+  optional Result result = 1;
+}
+
+message StreamFeedReply {
+  optional uint32 feedId = 1;
+  optional uint32 seq = 2;
+  optional float setPoint = 3;
+  optional float bathTemp = 4;
+}
+
+message EnterBootModeRequest {
+  optional BootModeType bootModeType = 1;
+}
+
+message EnterBootModeReply {
+  optional Result result = 1;
+}
+
+message StartFileTransferRequest {
+  optional FileType fileType = 1;
+  optional uint32 blockCount = 2;
+  optional uint32 byteCount = 3;
+  optional uint32 checksum = 4;
+  optional string version = 5;
+}
+
+message StartFileTransferReply {
+  optional Result result = 1;
+}
+
+message StartFileReceiveRequest {
+  optional FileType fileType = 1;
+}
+
+message StartFileReceiveReply {
+  optional Result result = 1;
+  optional uint32 blockCount = 2;
+  optional uint32 byteCount = 3;
+  optional uint32 checksum = 4;
+}
+
+message TransferFileBlockRequest {
+  optional uint32 blockIdx = 1;
+  optional bytes block = 2;
+}
+
+message TransferFileBlockReply {
+  optional Result result = 1;
+  optional uint32 blockIdx = 2;
+}
+
+message TransferFileComplete {
+  optional Result result = 1;
+}
+
+message StartKeyExchangeRequest {
+}
+
+message StartKeyExchangeReply {
+  optional bytes secretKey = 1;
+  optional Result result = 2;
+}
+
+message CancelKeyExchangeRequest {
+}
+
+message CancelKeyExchangeReply {
+  optional Result result = 1;
+}
+
+message SubmitKeyRequest {
+  optional bytes secretKey = 1;
+}
+
+message SubmitKeyReply {
+  optional Result result = 1;
+}
+
+message SubmitBearerAuthTokenRequest {
+  optional string token = 1;
+}
+
+message SubmitBearerAuthTokenReply {
+  optional Result result = 1;
+}
+
+message FactoryResetRequest {
+  optional bool restart = 1;
+}
+
+message FactoryResetReply {
+  optional Result result = 1;
+}
+
+message DeviceRestartRequest {
+}
+
+message DeviceRestartReply {
+  optional Result result = 1;
+}
+
+message TestResetRequest {
+}
+
+message TestResetReply {
+  optional Result result = 1;
+}
+
+message ForgetDevicePairingRequest {
+}
+
+message ForgetDevicePairingReply {
+  optional Result result = 1;
+}
+
+message SetSimulatorRequest {
+  optional bool simulatorOn = 1;
+}
+
+message SetSimulatorReply {
+  optional Result result = 1;
+}
+
+message GetSimulatorRequest {
+}
+
+message GetSimulatorReply {
+  optional bool simulatorOn = 1;
+}
+
+message SetHardwareCoeffsRequest {
+  optional float tempAdcBias = 1;
+  optional float tempAdcScale = 2;
+  optional float tempRef = 3;
+  optional float tempCoeffA = 4;
+  optional float tempCoeffB = 5;
+  optional float tempCoeffC = 6;
+}
+
+message SetHardwareCoeffsReply {
+  optional Result result = 1;
+}
+
+message GetHardwareCoeffsRequest {
+}
+
+message GetHardwareCoeffsReply {
+  optional float tempAdcBias = 1;
+  optional float tempAdcScale = 2;
+  optional float tempRef = 3;
+  optional float tempCoeffA = 4;
+  optional float tempCoeffB = 5;
+  optional float tempCoeffC = 6;
+  optional Result result = 7;
+}
+
+message UsageDataMetric {
+  optional UsageMetric key = 1;
+  optional MetricValue value = 2;
+}
+
+message MetricValue {
+  optional uint32 intValue = 1;
+  optional float floatValue = 2;
+}
+
+message GetUsageDataRequest {
+}
+
+message GetUsageDataReply {
+  optional Result result = 1;
+  optional string serialNumber = 2;
+  optional UsageDataMetric metric = 3;
+}
+
+message ResetUsageDataRequest {
+}
+
+message ResetUsageDataReply {
+  optional Result result = 1;
+}
+
+message GetCrashDataRequest {
+}
+
+message GetCrashDataReply {
+  optional Result result = 1;
+  optional string firmwareVersion = 2;
+  optional uint32 sameCrashCount = 3;
+  optional bytes data = 4;
+}
+
+message ResetCrashDataRequest {
+}
+
+message ResetCrashDataReply {
+  optional Result result = 1;
+}
+
+message GetLimitsRequest {
+}
+
+message GetLimitsReply {
+  optional Result result = 1;
+  optional float maxTemp = 2;
+}
