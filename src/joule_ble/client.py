@@ -293,6 +293,7 @@ class JouleClient:
             "stopCirculatorReply",
             "updateProgramReply",
             "clearErrorReply",
+            "dropFoodReply",
             "beginLiveFeedReply",
             "buttonPressReply",
             "startKeyExchangeReply",
@@ -536,6 +537,27 @@ class JouleClient:
         self._state.low_water = False
         self._state.motor_fault = False
         self._notify_listeners()
+
+    async def drop_food(self) -> None:
+        """Confirm food has been added and transition from waiting to active cooking."""
+        req = joule_pb2.DropFoodRequest()
+
+        msg = joule_pb2.StreamMessage()
+        msg.dropFoodRequest.CopyFrom(req)
+
+        reply = await self._send_message(
+            msg, expected_reply="dropFoodReply", timeout=DEFAULT_COMMAND_TIMEOUT
+        )
+        if reply:
+            res = reply.dropFoodReply.result
+            if res != joule_pb2.CS_SUCCESS:
+                raise JouleCommandError(
+                    f"Drop food failed with code {res}", result_code=res
+                )
+
+        if self._state.program_step == CookState.WAITING_FOR_FOOD:
+            self._state.program_step = CookState.COOKING
+            self._notify_listeners()
 
     async def pair_or_authenticate(self, timeout: float = 30.0) -> JouleAuthData:
         """Perform authenticated pairing / key exchange if required by firmware."""

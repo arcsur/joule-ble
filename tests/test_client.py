@@ -335,3 +335,30 @@ async def test_client_clean_disconnect():
         await client.disconnect()
         assert not client.is_connected
         assert not client.state.connected
+
+
+@pytest.mark.asyncio
+async def test_drop_food():
+    """Test sending drop_food command transitions state."""
+    device = BLEDevice("11:22:33:44:55:66", "Joule", {})
+    client = JouleClient(device)
+    mock_bleak = create_mock_bleak_client("chefsteps")
+
+    with patch(
+        "joule_ble.client.establish_connection",
+        AsyncMock(return_value=mock_bleak),
+    ):
+        await client.connect()
+
+    client.state.program_step = CookState.WAITING_FOR_FOOD
+
+    async def reply_drop_food(char, data, response=False):
+        msg = joule_pb2.StreamMessage()
+        msg.dropFoodReply.result = joule_pb2.CS_SUCCESS
+        raw = bytearray(msg.SerializeToString())
+        client._handle_notification(MagicMock(), raw)
+
+    mock_bleak.write_gatt_char.side_effect = reply_drop_food
+
+    await client.drop_food()
+    assert client.state.program_step == CookState.COOKING
