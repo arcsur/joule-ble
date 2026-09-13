@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+__version__ = "0.1.0"
+
 from .client import JouleClient
 from .const import (
     MAX_TEMP_C,
@@ -30,6 +32,7 @@ from .models import (
 from .parser import JouleBluetoothDeviceData
 
 __all__ = [
+    "__version__",
     "JouleClient",
     "JouleBluetoothDeviceData",
     "JouleDeviceInfo",

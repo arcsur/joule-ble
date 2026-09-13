@@ -1,0 +1,81 @@
+name: Publish to PyPI
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      pypi_env:
+        description: "Target PyPI environment (pypi or testpypi)"
+        required: true
+        default: "pypi"
+        type: choice
+        options:
+          - pypi
+          - testpypi
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install .[dev] build twine
+
+      - name: Run lint and format checks
+        run: |
+          ruff check src tests
+          ruff format --check src tests
+
+      - name: Run type checking
+        run: |
+          mypy src/joule_ble
+
+      - name: Run tests
+        run: |
+          pytest tests/ -v
+
+      - name: Build distributions
+        run: |
+          python -m build
+
+      - name: Check package metadata
+        run: |
+          twine check dist/*
+
+      - name: Upload dist artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-artifacts
+          path: dist/
+
+  publish-pypi:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ inputs.pypi_env || 'pypi' }}
+      url: ${{ inputs.pypi_env == 'testpypi' && 'https://test.pypi.org/p/joule-ble' || 'https://pypi.org/p/joule-ble' }}
+    steps:
+      - name: Download dist artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist-artifacts
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: ${{ inputs.pypi_env == 'testpypi' && 'https://test.pypi.org/legacy/' || '' }}
