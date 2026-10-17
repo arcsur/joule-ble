@@ -501,9 +501,8 @@ class JouleClient:
                     # Android explicitly uses WRITE_TYPE_NO_RESPONSE (response=False)
                     # for all characteristic writes except file transfer.
                     # Firmware fails to route ATT Write Requests to stream handler.
-                    write_with_response = (
-                        self._is_breville_profile
-                        and ("write" in self._write_char.properties)
+                    write_with_response = self._is_breville_profile and (
+                        "write" in self._write_char.properties
                     )
                     await self._client.write_gatt_char(
                         self._write_char,
