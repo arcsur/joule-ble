@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import time
 from collections.abc import Callable
 from typing import Any, cast
@@ -107,6 +108,18 @@ class JouleClient:
         self._sender_address: bytes = DEFAULT_SENDER_ADDRESS
         self._recipient_address: bytes = norm_recipient
         self._keepalive_task: asyncio.Task[None] | None = None
+        self._latest_feed_id: int = 0
+        self._latest_seq_num: int = 0
+
+    @property
+    def latest_feed_id(self) -> int:
+        """Return the latest feedId from live telemetry."""
+        return self._latest_feed_id
+
+    @property
+    def latest_seq_num(self) -> int:
+        """Return the latest sequenceNumber from live telemetry."""
+        return self._latest_seq_num
 
     @property
     def is_connected(self) -> bool:
@@ -454,6 +467,10 @@ class JouleClient:
     def _handle_circulator_data_point(self, dp: joule_pb2.CirculatorDataPoint) -> None:
         """Update internal state from incoming CirculatorDataPoint."""
         self._state.connected = True
+        if dp.HasField("feedId"):
+            self._latest_feed_id = dp.feedId
+        if dp.HasField("sequenceNumber"):
+            self._latest_seq_num = dp.sequenceNumber
         if dp.HasField("bathTemp"):
             self._state.bath_temp_c = round(dp.bathTemp, 2)
         if dp.HasField("heaterTemp"):
@@ -483,6 +500,33 @@ class JouleClient:
             self._state.low_water = False
 
         self._state.last_updated = time.time()
+
+        # Dual response recognition:
+        # ChefSteps firmware often begins heating and emits CirculatorDataPoint
+        # with programStep=PRE_HEAT or IDLE without sending a discrete reply.
+        if "startProgramReply" in self._response_futures and self._state.is_cooking:
+            _LOGGER.info(
+                "Circulator transitioned to cooking step %s; resolving "
+                "startProgramReply",
+                self._state.program_step,
+            )
+            dummy_msg = joule_pb2.StreamMessage()
+            dummy_msg.startProgramReply.result = joule_pb2.CS_SUCCESS
+            self._resolve_pending_reply("startProgramReply", dummy_msg)
+
+        if (
+            "stopCirculatorReply" in self._response_futures
+            and not self._state.is_cooking
+        ):
+            _LOGGER.info(
+                "Circulator transitioned to idle step %s; resolving "
+                "stopCirculatorReply",
+                self._state.program_step,
+            )
+            dummy_msg = joule_pb2.StreamMessage()
+            dummy_msg.stopCirculatorReply.result = joule_pb2.CS_SUCCESS
+            self._resolve_pending_reply("stopCirculatorReply", dummy_msg)
+
         self._notify_listeners()
 
     def _resolve_pending_reply(
@@ -658,7 +702,7 @@ class JouleClient:
         candidates: list[bytes] = []
 
         def _add(cand: bytes) -> None:
-            if cand and cand not in candidates:
+            if cand is not None and cand not in candidates:
                 candidates.append(cand)
 
         # 1. Primary candidate: explicit or advertisement recipient address
@@ -684,6 +728,9 @@ class JouleClient:
         if len(clean_mac) == 12:
             _add(clean_mac.lower().encode("ascii"))
             _add(clean_mac.upper().encode("ascii"))
+
+        # 5. Empty address (used by official iOS app)
+        _add(b"")
 
         return candidates
 
@@ -759,22 +806,47 @@ class JouleClient:
                 f"{MIN_TEMP_C}°C and {MAX_TEMP_C}°C"
             )
 
+        # On ChefSteps, ensure live feed has emitted at least one data point
+        # for concurrency headers
+        if not self._is_breville_profile and not self._latest_feed_id:
+            _LOGGER.debug("Waiting for live feed data point before starting cook...")
+            await self._start_live_feed()
+            for _ in range(10):
+                await asyncio.sleep(0.2)
+                if self._latest_feed_id:
+                    break
+
         prog = joule_pb2.CirculatorProgram()
         prog.setPoint = float(target_temp_c)
-        if cook_time_seconds > 0:
-            prog.cookTime = int(cook_time_seconds)
-            prog.programType = joule_pb2.AUTOMATIC
-        else:
+        if not self._is_breville_profile:
+            # ChefSteps Original Joule:
+            # The firmware requires programType=MANUAL (0) and NO cookTime.
+            # Local control manages timers in software.
             prog.programType = joule_pb2.MANUAL
-        if delayed_start_seconds > 0:
-            prog.delayedStart = int(delayed_start_seconds)
-        if holding_temp_c >= MIN_TEMP_C:
-            prog.holdingTemperature = float(holding_temp_c)
+        else:
+            if cook_time_seconds > 0:
+                prog.cookTime = int(cook_time_seconds)
+                prog.programType = joule_pb2.AUTOMATIC
+            else:
+                prog.programType = joule_pb2.MANUAL
+            if delayed_start_seconds > 0:
+                prog.delayedStart = int(delayed_start_seconds)
+            if holding_temp_c >= MIN_TEMP_C:
+                prog.holdingTemperature = float(holding_temp_c)
 
         req = joule_pb2.StartProgramRequest()
         req.circulatorProgram.CopyFrom(prog)
+        if not self._is_breville_profile:
+            if self._latest_feed_id:
+                req.feedId = self._latest_feed_id
+            if self._latest_seq_num:
+                req.sequenceNumber = self._latest_seq_num
 
         msg = joule_pb2.StreamMessage()
+        if not self._is_breville_profile:
+            msg.handle = random.randint(1, 2**31 - 1)
+            msg.senderAddress = b""
+            msg.recipientAddress = b""
         msg.startProgramRequest.CopyFrom(req)
 
         reply = await self._send_message(
@@ -812,6 +884,10 @@ class JouleClient:
         req.updateProgramType = joule_pb2.REGULAR
 
         msg = joule_pb2.StreamMessage()
+        if not self._is_breville_profile:
+            msg.handle = random.randint(1, 2**31 - 1)
+            msg.senderAddress = b""
+            msg.recipientAddress = b""
         msg.updateProgramRequest.CopyFrom(req)
 
         reply = await self._send_message(
@@ -830,8 +906,17 @@ class JouleClient:
     async def stop_cook(self) -> None:
         """Stop heating and circulating."""
         req = joule_pb2.StopCirculatorRequest()
+        if not self._is_breville_profile:
+            if self._latest_feed_id:
+                req.feedId = self._latest_feed_id
+            if self._latest_seq_num:
+                req.sequenceNumber = self._latest_seq_num
 
         msg = joule_pb2.StreamMessage()
+        if not self._is_breville_profile:
+            msg.handle = random.randint(1, 2**31 - 1)
+            msg.senderAddress = b""
+            msg.recipientAddress = b""
         msg.stopCirculatorRequest.CopyFrom(req)
 
         reply = await self._send_message(

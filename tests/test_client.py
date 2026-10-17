@@ -813,16 +813,52 @@ async def test_client_start_cook_circulator_program_fields():
     assert not prog.HasField("delayedStart")
     assert not prog.HasField("holdingTemperature")
 
-    # 2. Cook with timer
+    # 2. Cook with timer on ChefSteps (firmware requires MANUAL,
+    # cookTime omitted in proto)
     await cs_client.start_cook(target_temp_c=60.0, cook_time_seconds=1800)
     assert len(captured_requests) == 2
     prog2 = captured_requests[1].circulatorProgram
     assert prog2.setPoint == 60.0
-    assert prog2.cookTime == 1800
-    assert prog2.programType == joule_pb2.AUTOMATIC
+    assert not prog2.HasField("cookTime")
+    assert prog2.programType == joule_pb2.MANUAL
+    assert cs_client.state.cook_time_seconds == 1800
     assert not prog2.HasField("delayedStart")
     assert not prog2.HasField("holdingTemperature")
     await cs_client.disconnect()
+
+    # 3. Cook with timer on Breville (programType is AUTOMATIC, cookTime is populated)
+    br_device = BLEDevice("66:55:44:33:22:11", "Joule Turbo", {})
+    br_client = JouleClient(br_device)
+    br_mock = create_mock_bleak_client("breville")
+    br_requests = []
+
+    async def br_fake_write(char, data, response=False):
+        msg = joule_pb2.StreamMessage()
+        try:
+            msg.ParseFromString(bytes(data))
+            if msg.HasField("startProgramRequest"):
+                br_requests.append(msg.startProgramRequest)
+                reply = joule_pb2.StreamMessage()
+                reply.startProgramReply.result = joule_pb2.CS_SUCCESS
+                br_client._resolve_pending_reply("startProgramReply", reply)
+        except Exception:
+            pass
+
+    br_mock.write_gatt_char.side_effect = br_fake_write
+
+    with patch(
+        "joule_ble.client.establish_connection",
+        AsyncMock(return_value=br_mock),
+    ):
+        await br_client.connect(auto_start_feed=False)
+
+    await br_client.start_cook(target_temp_c=62.0, cook_time_seconds=2400)
+    assert len(br_requests) == 1
+    prog_br = br_requests[0].circulatorProgram
+    assert prog_br.setPoint == 62.0
+    assert prog_br.cookTime == 2400
+    assert prog_br.programType == joule_pb2.AUTOMATIC
+    await br_client.disconnect()
 
 
 @pytest.mark.asyncio
@@ -980,3 +1016,111 @@ async def test_circulator_data_point_partial_fields():
     assert client.state.program_step == CookState.COOKING
     # motor_rpm must not have been overwritten with 0
     assert client.state.motor_rpm == 1200
+
+
+@pytest.mark.asyncio
+async def test_client_start_stop_cook_optimistic_concurrency():
+    """Test start_cook and stop_cook populate feedId and sequenceNumber."""
+    cs_device = BLEDevice("11:22:33:44:55:66", "ChefSteps Joule", {})
+    cs_client = JouleClient(cs_device)
+    cs_mock = create_mock_bleak_client("chefsteps")
+
+    captured_start_reqs = []
+    captured_stop_reqs = []
+
+    async def fake_write(char, data, response=False):
+        msg = joule_pb2.StreamMessage()
+        try:
+            msg.ParseFromString(bytes(data))
+            if msg.HasField("startProgramRequest"):
+                captured_start_reqs.append(msg.startProgramRequest)
+                reply = joule_pb2.StreamMessage()
+                reply.startProgramReply.result = joule_pb2.CS_SUCCESS
+                cs_client._resolve_pending_reply("startProgramReply", reply)
+            elif msg.HasField("stopCirculatorRequest"):
+                captured_stop_reqs.append(msg.stopCirculatorRequest)
+                reply = joule_pb2.StreamMessage()
+                reply.stopCirculatorReply.result = joule_pb2.CS_SUCCESS
+                cs_client._resolve_pending_reply("stopCirculatorReply", reply)
+        except Exception:
+            pass
+
+    cs_mock.write_gatt_char.side_effect = fake_write
+
+    with patch(
+        "joule_ble.client.establish_connection",
+        AsyncMock(return_value=cs_mock),
+    ):
+        await cs_client.connect(auto_start_feed=False)
+
+    # Simulate incoming telemetry feed updating feedId and sequenceNumber
+    dp = joule_pb2.CirculatorDataPoint()
+    dp.feedId = 3732120802
+    dp.sequenceNumber = 4349
+    cs_client._handle_circulator_data_point(dp)
+
+    assert cs_client.latest_feed_id == 3732120802
+    assert cs_client.latest_seq_num == 4349
+
+    # Start cook should include concurrency headers
+    await cs_client.start_cook(target_temp_c=58.0)
+    assert len(captured_start_reqs) == 1
+    req = captured_start_reqs[0]
+    assert req.feedId == 3732120802
+    assert req.sequenceNumber == 4349
+
+    # Stop cook should include concurrency headers
+    await cs_client.stop_cook()
+    assert len(captured_stop_reqs) == 1
+    stop_req = captured_stop_reqs[0]
+    assert stop_req.feedId == 3732120802
+    assert stop_req.sequenceNumber == 4349
+
+    await cs_client.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_client_dual_resolution_start_and_stop():
+    """Test start/stop cook resolve immediately upon telemetry state transition."""
+    cs_device = BLEDevice("11:22:33:44:55:66", "ChefSteps Joule", {})
+    cs_client = JouleClient(cs_device)
+    cs_mock = create_mock_bleak_client("chefsteps")
+
+    # The mock does NOT return startProgramReply or stopCirculatorReply directly.
+    # Instead, it simulates the firmware sending CirculatorDataPoint transitions.
+    async def fake_write(char, data, response=False):
+        msg = joule_pb2.StreamMessage()
+        try:
+            msg.ParseFromString(bytes(data))
+            if msg.HasField("startProgramRequest"):
+                # Firmware begins heating without discrete startProgramReply
+                dp = joule_pb2.CirculatorDataPoint()
+                dp.programStep = joule_pb2.PRE_HEAT
+                cs_client._handle_circulator_data_point(dp)
+            elif msg.HasField("stopCirculatorRequest"):
+                # Firmware stops without discrete stopCirculatorReply
+                dp = joule_pb2.CirculatorDataPoint()
+                dp.programStep = joule_pb2.UNKNOWN  # IDLE
+                cs_client._handle_circulator_data_point(dp)
+        except Exception:
+            pass
+
+    cs_mock.write_gatt_char.side_effect = fake_write
+
+    with patch(
+        "joule_ble.client.establish_connection",
+        AsyncMock(return_value=cs_mock),
+    ):
+        await cs_client.connect(auto_start_feed=False)
+
+    # start_cook must resolve without timing out thanks to dual resolution
+    await cs_client.start_cook(target_temp_c=54.0)
+    assert cs_client.state.is_cooking
+    assert cs_client.state.program_step == CookState.PRE_HEATING
+
+    # stop_cook must resolve without timing out thanks to dual resolution
+    await cs_client.stop_cook()
+    assert not cs_client.state.is_cooking
+    assert cs_client.state.program_step == CookState.IDLE
+
+    await cs_client.disconnect()
