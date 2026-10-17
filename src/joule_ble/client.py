@@ -78,7 +78,12 @@ class JouleClient:
         norm_recipient: bytes = DEFAULT_RECIPIENT_ADDRESS
         if recipient_address:
             if isinstance(recipient_address, str):
-                norm_recipient = recipient_address.encode("utf-8")
+                try:
+                    norm_recipient = bytes.fromhex(
+                        recipient_address.replace(":", "").replace("-", "")
+                    )
+                except ValueError:
+                    norm_recipient = recipient_address.encode("utf-8")
             elif isinstance(recipient_address, (bytes, bytearray)):
                 norm_recipient = bytes(recipient_address)
 
@@ -563,16 +568,16 @@ class JouleClient:
             if cand and cand not in candidates:
                 candidates.append(cand)
 
-        # 1. Primary broadcast address ("0") used by official app during
-        # discovery/pairing
-        _add(DEFAULT_RECIPIENT_ADDRESS)
-
-        # 2. Explicit or discovered address candidate if different
+        # 1. Primary candidate: explicit or advertisement recipient address
+        # (MakeRecipientAddress in official APK: raw bytes of mfg[1:])
         if (
             self._recipient_address
             and self._recipient_address != DEFAULT_RECIPIENT_ADDRESS
         ):
             _add(self._recipient_address)
+
+        # 2. Universal broadcast address ("0")
+        _add(DEFAULT_RECIPIENT_ADDRESS)
 
         clean_mac = self._ble_device.address.replace(":", "").replace("-", "")
         # 3. 6 raw binary MAC bytes (legacyJouleRecipientAddressBytes in Android APK)

@@ -66,6 +66,12 @@ class JouleBluetoothDeviceData:
         recipient_address: bytes | None = DEFAULT_RECIPIENT_ADDRESS
         # Check manufacturer data if available
         if advertisement_data.manufacturer_data:
+            if CHEFSTEPS_MANUFACTURER_ID in advertisement_data.manufacturer_data:
+                mfg = advertisement_data.manufacturer_data[CHEFSTEPS_MANUFACTURER_ID]
+                if len(mfg) > 1:
+                    # MakeRecipientAddress in official APK: raw bytes of mfg[1:]
+                    recipient_address = bytes(mfg[1:])
+
             for _, data in advertisement_data.manufacturer_data.items():
                 if len(data) >= 8:
                     try:

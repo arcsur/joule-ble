@@ -4,7 +4,6 @@ from bleak.backends.device import BLEDevice
 from bleak.backends.scanner import AdvertisementData
 
 from joule_ble.const import (
-    DEFAULT_RECIPIENT_ADDRESS,
     UUID_BREVILLE_SERVICE,
     UUID_CHEFSTEP_STREAM_SERVICE,
 )
@@ -89,7 +88,7 @@ def test_parser_manufacturer_data():
 
 
 def test_parser_manufacturer_data_recipient_address():
-    """Test extracting recipient address default from ChefSteps advertisement."""
+    """Test extracting recipient address raw bytes from ChefSteps advertisement."""
     parser = JouleBluetoothDeviceData()
     ble_device = BLEDevice("CD:F6:E0:B4:F7:5D", "Joule", {})
     mfg_bytes = b"\x01\xc0\x00\x00\xf0\xce\xbd\xcb\xbf"
@@ -104,4 +103,4 @@ def test_parser_manufacturer_data_recipient_address():
     )
     info = parser.update(ble_device, adv_data)
     assert info is not None
-    assert info.recipient_address == DEFAULT_RECIPIENT_ADDRESS
+    assert info.recipient_address == b"\xc0\x00\x00\xf0\xce\xbd\xcb\xbf"
