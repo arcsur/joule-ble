@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -53,7 +54,7 @@ def create_mock_bleak_client(profile: str = "chefsteps"):
 
         notify_char = MagicMock(spec=BleakGATTCharacteristic)
         notify_char.uuid = UUID_CHEFSTEP_STREAM_SUBSCRIBE
-        notify_char.properties = ["notify"]
+        notify_char.properties = ["notify", "write"]
 
         read_char = MagicMock(spec=BleakGATTCharacteristic)
         read_char.uuid = UUID_CHEFSTEP_STREAM_READ
@@ -145,9 +146,9 @@ async def test_client_connect_breville_profile():
 @pytest.mark.asyncio
 async def test_client_notification_updates_state():
     """Test receiving CirculatorDataPoint notifications."""
-    device = BLEDevice("11:22:33:44:55:66", "Joule", {})
+    device = BLEDevice("11:22:33:44:55:66", "Joule Turbo", {})
     client = JouleClient(device)
-    mock_bleak = create_mock_bleak_client("chefsteps")
+    mock_bleak = create_mock_bleak_client("breville")
 
     with patch(
         "joule_ble.client.establish_connection",
@@ -195,11 +196,12 @@ async def test_client_start_cook_success():
 
     # Intercept write_gatt_char to automatically simulate startProgramReply
     async def fake_write(char, data, response=False):
+        if data == bytearray([1]):
+            return
         reply_msg = joule_pb2.StreamMessage()
         reply_msg.startProgramReply.result = joule_pb2.CS_SUCCESS
-        # Deliver reply via notification handler
-        raw = bytearray(reply_msg.SerializeToString())
-        client._handle_notification(MagicMock(), raw)
+        mock_bleak.read_gatt_char.return_value = reply_msg.SerializeToString()
+        client._handle_notification(MagicMock(), bytearray([1]))
 
     mock_bleak.write_gatt_char.side_effect = fake_write
 
@@ -236,10 +238,12 @@ async def test_client_start_cook_error_reply():
         await client.connect(auto_start_feed=False)
 
     async def fake_write(char, data, response=False):
+        if data == bytearray([1]):
+            return
         reply_msg = joule_pb2.StreamMessage()
         reply_msg.startProgramReply.result = joule_pb2.CS_ERROR_INVALID_STATE
-        raw = bytearray(reply_msg.SerializeToString())
-        client._handle_notification(MagicMock(), raw)
+        mock_bleak.read_gatt_char.return_value = reply_msg.SerializeToString()
+        client._handle_notification(MagicMock(), bytearray([1]))
 
     mock_bleak.write_gatt_char.side_effect = fake_write
 
@@ -262,10 +266,12 @@ async def test_client_stop_cook():
         await client.connect(auto_start_feed=False)
 
     async def fake_write(char, data, response=False):
+        if data == bytearray([1]):
+            return
         reply_msg = joule_pb2.StreamMessage()
         reply_msg.stopCirculatorReply.result = joule_pb2.CS_SUCCESS
-        raw = bytearray(reply_msg.SerializeToString())
-        client._handle_notification(MagicMock(), raw)
+        mock_bleak.read_gatt_char.return_value = reply_msg.SerializeToString()
+        client._handle_notification(MagicMock(), bytearray([1]))
 
     mock_bleak.write_gatt_char.side_effect = fake_write
 
@@ -291,10 +297,12 @@ async def test_client_clear_errors():
     client._state.low_water = True
 
     async def fake_write(char, data, response=False):
+        if data == bytearray([1]):
+            return
         reply_msg = joule_pb2.StreamMessage()
         reply_msg.clearErrorReply.result = joule_pb2.CS_SUCCESS
-        raw = bytearray(reply_msg.SerializeToString())
-        client._handle_notification(MagicMock(), raw)
+        mock_bleak.read_gatt_char.return_value = reply_msg.SerializeToString()
+        client._handle_notification(MagicMock(), bytearray([1]))
 
     mock_bleak.write_gatt_char.side_effect = fake_write
 
@@ -360,10 +368,12 @@ async def test_drop_food():
     client.state.program_step = CookState.WAITING_FOR_FOOD
 
     async def reply_drop_food(char, data, response=False):
+        if data == bytearray([1]):
+            return
         msg = joule_pb2.StreamMessage()
         msg.dropFoodReply.result = joule_pb2.CS_SUCCESS
-        raw = bytearray(msg.SerializeToString())
-        client._handle_notification(MagicMock(), raw)
+        mock_bleak.read_gatt_char.return_value = msg.SerializeToString()
+        client._handle_notification(MagicMock(), bytearray([1]))
 
     mock_bleak.write_gatt_char.side_effect = reply_drop_food
 
@@ -415,6 +425,8 @@ async def test_client_send_message_sets_envelope_headers():
     captured_chunks = []
 
     async def capture_write(char, data, response=False):
+        if data == bytearray([1]):
+            return
         captured_chunks.append(bytes(data))
         reply = joule_pb2.StreamMessage()
         reply.clearErrorReply.result = joule_pb2.CS_SUCCESS
@@ -519,6 +531,8 @@ async def test_client_stream_envelope_headers():
     captured_messages: list[joule_pb2.StreamMessage] = []
 
     async def fake_write(char, data, response=False):
+        if data == bytearray([1]):
+            return
         sent = joule_pb2.StreamMessage()
         sent.ParseFromString(bytes(data))
         captured_messages.append(sent)
@@ -545,3 +559,52 @@ async def test_client_stream_envelope_headers():
     assert sent_msg.handle == 2389
     assert sent_msg.senderAddress == b"ABCDABCD"
     assert sent_msg.recipientAddress == b"0"
+
+
+@pytest.mark.asyncio
+async def test_client_connect_activates_chefsteps_stream():
+    """Test ChefSteps connect writes 0x01 to notify_char to activate stream."""
+    device = BLEDevice("11:22:33:44:55:66", "ChefSteps Joule", {})
+    client = JouleClient(device)
+    mock_bleak = create_mock_bleak_client("chefsteps")
+
+    with patch(
+        "joule_ble.client.establish_connection",
+        AsyncMock(return_value=mock_bleak),
+    ):
+        await client.connect(auto_start_feed=False)
+
+    # Verify write_gatt_char called with bytearray([1]) on subscribe char
+    calls = mock_bleak.write_gatt_char.call_args_list
+    assert len(calls) >= 1
+    subscribe_call = calls[0]
+    char_arg, data_arg = subscribe_call[0][0], subscribe_call[0][1]
+    assert char_arg.uuid == UUID_CHEFSTEP_STREAM_SUBSCRIBE
+    assert data_arg == bytearray([1])
+    assert subscribe_call[1].get("response") is True
+
+
+@pytest.mark.asyncio
+async def test_client_chefsteps_alert_byte_triggers_read():
+    """Test ChefSteps notification with alert byte (0x01) triggers stream read."""
+    device = BLEDevice("11:22:33:44:55:66", "ChefSteps Joule", {})
+    client = JouleClient(device)
+    mock_bleak = create_mock_bleak_client("chefsteps")
+
+    dp_msg = joule_pb2.StreamMessage()
+    dp_msg.circulatorDataPoint.bathTemp = 55.5
+    dp_msg.circulatorDataPoint.programStep = joule_pb2.COOK
+    mock_bleak.read_gatt_char.return_value = dp_msg.SerializeToString()
+
+    with patch(
+        "joule_ble.client.establish_connection",
+        AsyncMock(return_value=mock_bleak),
+    ):
+        await client.connect(auto_start_feed=False)
+
+    # Firmware sends 1-byte alert notification payload (0x01)
+    client._handle_notification(MagicMock(), bytearray([1]))
+    await asyncio.sleep(0.02)
+
+    assert client.state.bath_temp_c == 55.5
+    assert client.state.program_step == CookState.COOKING

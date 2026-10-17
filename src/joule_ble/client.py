@@ -241,6 +241,27 @@ class JouleClient:
         # Subscribe to notifications
         await self._client.start_notify(self._notify_char, self._handle_notification)
 
+        # For ChefSteps Original Joule, the firmware requires writing b"\x01"
+        # with response to UUID_CHEFSTEP_STREAM_SUBSCRIBE to activate stream
+        if not self._is_breville_profile:
+            _LOGGER.debug(
+                "Activating ChefSteps stream notifications (writing 0x01 to %s)",
+                self._notify_char.uuid,
+            )
+            try:
+                can_write_with_response = "write" in self._notify_char.properties
+                await self._client.write_gatt_char(
+                    self._notify_char,
+                    bytearray([1]),
+                    response=can_write_with_response,
+                )
+                _LOGGER.debug("ChefSteps stream notifications activated")
+            except Exception as err:
+                _LOGGER.warning(
+                    "Failed to write activation byte to ChefSteps subscribe char: %s",
+                    err,
+                )
+
         self._state.connected = True
         self._notify_listeners()
 
@@ -297,13 +318,17 @@ class JouleClient:
             self._rx_buffer.extend(data)
             self._try_parse_rx_buffer()
         else:
-            # ChefSteps Original Joule
-            if data:
-                self._rx_buffer.extend(data)
-                self._try_parse_rx_buffer()
-            else:
-                # Alert indicating data is waiting on UUID_CHEFSTEP_STREAM_READ
-                asyncio.create_task(self._read_chefsteps_stream())
+            # ChefSteps Original Joule:
+            # Notifications on UUID_CHEFSTEP_STREAM_SUBSCRIBE are alerts
+            # signalling that a StreamMessage is ready on
+            # UUID_CHEFSTEP_STREAM_READ. The raw notification payload is
+            # an alert byte/counter and not protobuf data.
+            _LOGGER.debug(
+                "ChefSteps stream notification alert received (%s),"
+                " triggering stream read",
+                data.hex() if data else "empty",
+            )
+            asyncio.create_task(self._read_chefsteps_stream())
 
     async def _read_chefsteps_stream(self) -> None:
         """Read a pending StreamMessage from ChefSteps read characteristic."""
@@ -313,7 +338,13 @@ class JouleClient:
             try:
                 raw_bytes = await self._client.read_gatt_char(self._read_char)
                 if not raw_bytes:
+                    _LOGGER.debug("ChefSteps stream read returned empty bytes")
                     return
+                _LOGGER.debug(
+                    "Read ChefSteps stream characteristic: %d bytes (hex: %s)",
+                    len(raw_bytes),
+                    raw_bytes.hex(),
+                )
                 msg = joule_pb2.StreamMessage()
                 msg.ParseFromString(bytes(raw_bytes))
                 self._process_stream_message(msg)
