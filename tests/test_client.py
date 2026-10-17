@@ -24,6 +24,7 @@ from joule_ble.const import (
     UUID_BREVILLE_APPLIANCE_MESSAGE,
     UUID_BREVILLE_SERIAL_NUMBER,
     UUID_BREVILLE_SERVICE,
+    UUID_CHEFSTEP_STREAM_READ,
     UUID_CHEFSTEP_STREAM_SERVICE,
     UUID_CHEFSTEP_STREAM_SUBSCRIBE,
     UUID_CHEFSTEP_STREAM_WRITE,
@@ -54,6 +55,10 @@ def create_mock_bleak_client(profile: str = "chefsteps"):
         notify_char.uuid = UUID_CHEFSTEP_STREAM_SUBSCRIBE
         notify_char.properties = ["notify"]
 
+        read_char = MagicMock(spec=BleakGATTCharacteristic)
+        read_char.uuid = UUID_CHEFSTEP_STREAM_READ
+        read_char.properties = ["read"]
+
         svc = MagicMock(spec=BleakGATTService)
         svc.uuid = UUID_CHEFSTEP_STREAM_SERVICE
 
@@ -67,6 +72,8 @@ def create_mock_bleak_client(profile: str = "chefsteps"):
                 return write_char
             if uuid == UUID_CHEFSTEP_STREAM_SUBSCRIBE:
                 return notify_char
+            if uuid == UUID_CHEFSTEP_STREAM_READ:
+                return read_char
             return None
 
     else:
@@ -113,7 +120,7 @@ async def test_client_connect_chefsteps_profile():
         "joule_ble.client.establish_connection",
         AsyncMock(return_value=mock_bleak),
     ):
-        await client.connect()
+        await client.connect(auto_start_feed=False)
         assert client.is_connected
         assert client.device_info.model == JouleModel.ORIGINAL_JOULE
         assert client.state.connected
@@ -130,7 +137,7 @@ async def test_client_connect_breville_profile():
         "joule_ble.client.establish_connection",
         AsyncMock(return_value=mock_bleak),
     ):
-        await client.connect()
+        await client.connect(auto_start_feed=False)
         assert client.is_connected
         assert client.device_info.model == JouleModel.JOULE_TURBO
 
@@ -146,7 +153,7 @@ async def test_client_notification_updates_state():
         "joule_ble.client.establish_connection",
         AsyncMock(return_value=mock_bleak),
     ):
-        await client.connect()
+        await client.connect(auto_start_feed=False)
 
     updates = []
     client.register_callback(lambda s: updates.append(s.bath_temp_c))
@@ -184,7 +191,7 @@ async def test_client_start_cook_success():
         "joule_ble.client.establish_connection",
         AsyncMock(return_value=mock_bleak),
     ):
-        await client.connect()
+        await client.connect(auto_start_feed=False)
 
     # Intercept write_gatt_char to automatically simulate startProgramReply
     async def fake_write(char, data, response=False):
@@ -226,7 +233,7 @@ async def test_client_start_cook_error_reply():
         "joule_ble.client.establish_connection",
         AsyncMock(return_value=mock_bleak),
     ):
-        await client.connect()
+        await client.connect(auto_start_feed=False)
 
     async def fake_write(char, data, response=False):
         reply_msg = joule_pb2.StreamMessage()
@@ -252,7 +259,7 @@ async def test_client_stop_cook():
         "joule_ble.client.establish_connection",
         AsyncMock(return_value=mock_bleak),
     ):
-        await client.connect()
+        await client.connect(auto_start_feed=False)
 
     async def fake_write(char, data, response=False):
         reply_msg = joule_pb2.StreamMessage()
@@ -278,7 +285,7 @@ async def test_client_clear_errors():
         "joule_ble.client.establish_connection",
         AsyncMock(return_value=mock_bleak),
     ):
-        await client.connect()
+        await client.connect(auto_start_feed=False)
 
     client._state.error_state = ErrorState.SOFT_ERROR
     client._state.low_water = True
@@ -307,7 +314,7 @@ async def test_client_command_timeout():
         "joule_ble.client.establish_connection",
         AsyncMock(return_value=mock_bleak),
     ):
-        await client.connect()
+        await client.connect(auto_start_feed=False)
 
     # write_gatt_char succeeds, but no reply arrives
     with pytest.raises(JouleTimeoutError):
@@ -329,7 +336,7 @@ async def test_client_clean_disconnect():
         "joule_ble.client.establish_connection",
         AsyncMock(return_value=mock_bleak),
     ):
-        await client.connect()
+        await client.connect(auto_start_feed=False)
         assert client.is_connected
 
         await client.disconnect()
@@ -348,7 +355,7 @@ async def test_drop_food():
         "joule_ble.client.establish_connection",
         AsyncMock(return_value=mock_bleak),
     ):
-        await client.connect()
+        await client.connect(auto_start_feed=False)
 
     client.state.program_step = CookState.WAITING_FOR_FOOD
 
@@ -362,3 +369,139 @@ async def test_drop_food():
 
     await client.drop_food()
     assert client.state.program_step == CookState.COOKING
+
+
+@pytest.mark.asyncio
+async def test_client_chefsteps_empty_notification_triggers_read():
+    """Test ChefSteps empty notification triggers a read on 700b4323."""
+    import asyncio
+
+    device = BLEDevice("11:22:33:44:55:66", "Joule CS100", {})
+    client = JouleClient(device)
+    mock_bleak = create_mock_bleak_client("chefsteps")
+
+    dp_msg = joule_pb2.StreamMessage()
+    dp_msg.senderAddress = b"JOULE123"
+    dp = dp_msg.circulatorDataPoint
+    dp.bathTemp = 60.5
+    dp.heaterTemp = 62.0
+    dp.motorRPM = 1100
+    dp.programStep = joule_pb2.COOK
+    dp.errorState = joule_pb2.NO_ERROR
+    dp.timeRemaining = 1200
+    mock_bleak.read_gatt_char.return_value = dp_msg.SerializeToString()
+
+    with patch(
+        "joule_ble.client.establish_connection",
+        AsyncMock(return_value=mock_bleak),
+    ):
+        await client.connect(auto_start_feed=False)
+
+    # Empty notification payload arrives from Joule (alert signal)
+    client._handle_notification(MagicMock(), bytearray(b""))
+    await asyncio.sleep(0.01)
+
+    assert client.state.bath_temp_c == 60.5
+    assert client.device_info.recipient_address == b"JOULE123"
+
+
+@pytest.mark.asyncio
+async def test_client_send_message_sets_envelope_headers():
+    """Test outgoing StreamMessage envelopes include required headers."""
+    device = BLEDevice("11:22:33:44:55:66", "Joule CS100", {})
+    client = JouleClient(device, recipient_address=b"MYJOULE1")
+    mock_bleak = create_mock_bleak_client("chefsteps")
+
+    captured_chunks = []
+
+    async def capture_write(char, data, response=False):
+        captured_chunks.append(bytes(data))
+        reply = joule_pb2.StreamMessage()
+        reply.clearErrorReply.result = joule_pb2.CS_SUCCESS
+        client._resolve_pending_reply("clearErrorReply", reply)
+
+    mock_bleak.write_gatt_char.side_effect = capture_write
+
+    with patch(
+        "joule_ble.client.establish_connection",
+        AsyncMock(return_value=mock_bleak),
+    ):
+        await client.connect(auto_start_feed=False)
+
+    await client.clear_errors()
+
+    assert len(captured_chunks) > 0
+    sent_msg = joule_pb2.StreamMessage()
+    sent_msg.ParseFromString(captured_chunks[0])
+    assert sent_msg.handle == 2389
+    assert sent_msg.senderAddress == b"ABCDABCD"
+    assert sent_msg.recipientAddress == b"MYJOULE1"
+
+
+@pytest.mark.asyncio
+async def test_client_key_exchange_and_auth():
+    """Test start_key_exchange and authenticate methods."""
+    device = BLEDevice("11:22:33:44:55:66", "Joule CS100", {})
+    client = JouleClient(device)
+    mock_bleak = create_mock_bleak_client("chefsteps")
+
+    async def fake_write(char, data, response=False):
+        sent = joule_pb2.StreamMessage()
+        sent.ParseFromString(bytes(data))
+        reply = joule_pb2.StreamMessage()
+        if sent.HasField("startKeyExchangeRequest"):
+            reply.startKeyExchangeReply.secretKey = b"MY_SECRET_KEY_12345"
+            reply.startKeyExchangeReply.result = joule_pb2.CS_SUCCESS
+            client._resolve_pending_reply("startKeyExchangeReply", reply)
+        elif sent.HasField("submitKeyRequest"):
+            if sent.submitKeyRequest.secretKey == b"MY_SECRET_KEY_12345":
+                reply.submitKeyReply.result = joule_pb2.CS_SUCCESS
+            else:
+                reply.submitKeyReply.result = joule_pb2.CS_ERROR_FORBIDDEN
+            client._resolve_pending_reply("submitKeyReply", reply)
+
+    mock_bleak.write_gatt_char.side_effect = fake_write
+
+    with patch(
+        "joule_ble.client.establish_connection",
+        AsyncMock(return_value=mock_bleak),
+    ):
+        await client.connect(auto_start_feed=False)
+
+    auth_data = await client.start_key_exchange()
+    assert auth_data.secret_key == b"MY_SECRET_KEY_12345"
+
+    auth_success = await client.authenticate()
+    assert auth_success is True
+
+
+@pytest.mark.asyncio
+async def test_client_request_button_press():
+    """Test request_button_press and cancel_button_press."""
+    device = BLEDevice("11:22:33:44:55:66", "Joule CS100", {})
+    client = JouleClient(device)
+    mock_bleak = create_mock_bleak_client("chefsteps")
+
+    async def fake_write(char, data, response=False):
+        sent = joule_pb2.StreamMessage()
+        sent.ParseFromString(bytes(data))
+        reply = joule_pb2.StreamMessage()
+        if sent.HasField("buttonPressRequest"):
+            reply.buttonPressReply.result = joule_pb2.CS_SUCCESS
+            client._resolve_pending_reply("buttonPressReply", reply)
+        elif sent.HasField("cancelButtonPressRequest"):
+            reply.cancelButtonPressReply.result = joule_pb2.CS_SUCCESS
+            client._resolve_pending_reply("cancelButtonPressReply", reply)
+
+    mock_bleak.write_gatt_char.side_effect = fake_write
+
+    with patch(
+        "joule_ble.client.establish_connection",
+        AsyncMock(return_value=mock_bleak),
+    ):
+        await client.connect(auto_start_feed=False)
+
+    pressed = await client.request_button_press(duration_ms=5000)
+    assert pressed is True
+
+    await client.cancel_button_press()

@@ -6,6 +6,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from .const import (
+    CHEFSTEPS_MANUFACTURER_ID,
     JOULE_SERVICE_UUIDS,
     UUID_BREVILLE_SERVICE,
     UUID_CHEFSTEP_STREAM_SERVICE,
@@ -55,8 +56,16 @@ class JouleBluetoothDeviceData:
             model = JouleModel.ORIGINAL_JOULE
 
         serial_number: str | None = None
+        recipient_address: bytes | None = None
         # Check manufacturer data if available
         if advertisement_data.manufacturer_data:
+            if CHEFSTEPS_MANUFACTURER_ID in advertisement_data.manufacturer_data:
+                mfg = advertisement_data.manufacturer_data[CHEFSTEPS_MANUFACTURER_ID]
+                if len(mfg) > 1:
+                    recipient_address = mfg[1:]
+                elif len(mfg) == 1:
+                    recipient_address = mfg
+
             for _, data in advertisement_data.manufacturer_data.items():
                 if len(data) >= 8:
                     try:
@@ -69,6 +78,7 @@ class JouleBluetoothDeviceData:
             model=model,
             serial_number=serial_number,
             mac_address=ble_device.address,
+            recipient_address=recipient_address,
         )
         return self._device_info
 

@@ -85,3 +85,22 @@ def test_parser_manufacturer_data():
     info = parser.update(ble_device, adv_data)
     assert info is not None
     assert info.serial_number == "CS100010099"
+
+
+def test_parser_manufacturer_data_recipient_address():
+    """Test extracting recipient address from ChefSteps manufacturer data 0x0159."""
+    parser = JouleBluetoothDeviceData()
+    ble_device = BLEDevice("CD:F6:E0:B4:F7:5D", "Joule", {})
+    mfg_bytes = b"\x01CDF6E0B4"
+    adv_data = AdvertisementData(
+        local_name="Joule",
+        manufacturer_data={345: mfg_bytes},
+        service_data={},
+        service_uuids=[UUID_CHEFSTEP_STREAM_SERVICE],
+        tx_power=0,
+        rssi=-50,
+        platform_data=(),
+    )
+    info = parser.update(ble_device, adv_data)
+    assert info is not None
+    assert info.recipient_address == b"CDF6E0B4"

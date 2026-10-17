@@ -6,6 +6,7 @@ import asyncio
 import logging
 import time
 from collections.abc import Callable
+from typing import Any, cast
 
 from bleak import BleakClient
 from bleak.backends.characteristic import BleakGATTCharacteristic
@@ -18,12 +19,17 @@ from .const import (
     DEFAULT_ATT_PAYLOAD_SIZE,
     DEFAULT_COMMAND_TIMEOUT,
     DEFAULT_CONNECT_TIMEOUT,
+    DEFAULT_PAIR_TIMEOUT,
+    DEFAULT_RECIPIENT_ADDRESS,
+    DEFAULT_SENDER_ADDRESS,
+    DEFAULT_STREAM_HANDLE,
     MAX_TEMP_C,
     MIN_TEMP_C,
     UUID_BREVILLE_APP_MESSAGE,
     UUID_BREVILLE_APPLIANCE_MESSAGE,
     UUID_BREVILLE_SERIAL_NUMBER,
     UUID_BREVILLE_SERVICE,
+    UUID_CHEFSTEP_STREAM_READ,
     UUID_CHEFSTEP_STREAM_SERVICE,
     UUID_CHEFSTEP_STREAM_SUBSCRIBE,
     UUID_CHEFSTEP_STREAM_WRITE,
@@ -56,6 +62,7 @@ class JouleClient:
         ble_device: BLEDevice,
         auth_data: JouleAuthData | None = None,
         model: JouleModel = JouleModel.UNKNOWN,
+        recipient_address: bytes | None = None,
     ) -> None:
         """Initialize the Joule client."""
         self._ble_device = ble_device
@@ -65,20 +72,26 @@ class JouleClient:
         self._client: BleakClient | None = None
         self._write_char: BleakGATTCharacteristic | None = None
         self._notify_char: BleakGATTCharacteristic | None = None
+        self._read_char: BleakGATTCharacteristic | None = None
         self._is_breville_profile: bool = False
 
         self._device_info: JouleDeviceInfo = JouleDeviceInfo(
             name=ble_device.name or "Joule",
             model=model,
             mac_address=ble_device.address,
+            recipient_address=recipient_address,
         )
         self._state: JouleState = JouleState()
         self._callbacks: list[Callable[[JouleState], None]] = []
 
         self._write_lock = asyncio.Lock()
+        self._read_lock = asyncio.Lock()
         self._response_futures: dict[str, asyncio.Future[joule_pb2.StreamMessage]] = {}
         self._rx_buffer = bytearray()
         self._max_payload_size = DEFAULT_ATT_PAYLOAD_SIZE
+        self._stream_handle: int = DEFAULT_STREAM_HANDLE
+        self._sender_address: bytes = DEFAULT_SENDER_ADDRESS
+        self._recipient_address: bytes = recipient_address or DEFAULT_RECIPIENT_ADDRESS
 
     @property
     def is_connected(self) -> bool:
@@ -115,7 +128,11 @@ class JouleClient:
             except Exception as err:
                 _LOGGER.exception("Error executing Joule state callback: %s", err)
 
-    async def connect(self, timeout: float = DEFAULT_CONNECT_TIMEOUT) -> None:
+    async def connect(
+        self,
+        timeout: float = DEFAULT_CONNECT_TIMEOUT,
+        auto_start_feed: bool = True,
+    ) -> None:
         """Connect to the Joule via BLE."""
         if self.is_connected:
             return
@@ -135,7 +152,7 @@ class JouleClient:
             ) from err
 
         try:
-            await self._setup_services()
+            await self._setup_services(auto_start_feed=auto_start_feed)
         except Exception as err:
             await self.disconnect()
             raise JouleConnectionError(f"Failed to setup GATT services: {err}") from err
@@ -156,7 +173,7 @@ class JouleClient:
                 fut.set_exception(exc)
         self._response_futures.clear()
 
-    async def _setup_services(self) -> None:
+    async def _setup_services(self, auto_start_feed: bool = True) -> None:
         """Discover services and configure characteristics."""
         if not self._client:
             raise JouleConnectionError("No BLE client available")
@@ -186,6 +203,7 @@ class JouleClient:
             self._notify_char = services.get_characteristic(
                 UUID_CHEFSTEP_STREAM_SUBSCRIBE
             )
+            self._read_char = services.get_characteristic(UUID_CHEFSTEP_STREAM_READ)
             _LOGGER.debug("Detected ChefSteps Original Joule profile")
         else:
             raise JouleConnectionError(
@@ -195,6 +213,10 @@ class JouleClient:
         if not self._write_char or not self._notify_char:
             raise JouleConnectionError(
                 f"Missing write or notify characteristic on {self._device_info.model}"
+            )
+        if not self._is_breville_profile and not self._read_char:
+            raise JouleConnectionError(
+                "Missing read characteristic on ChefSteps Original Joule"
             )
 
         # Read static device info if available
@@ -206,16 +228,24 @@ class JouleClient:
         self._state.connected = True
         self._notify_listeners()
 
-        # Request identification and start live feed
-        try:
-            await self.identify()
-        except Exception as err:
-            _LOGGER.debug("Identify query failed or skipped: %s", err)
+        # Initial drain of ChefSteps stream read characteristic if present
+        if not self._is_breville_profile and self._read_char:
+            try:
+                await self._read_chefsteps_stream()
+            except Exception as err:
+                _LOGGER.debug("Initial ChefSteps stream read skipped/failed: %s", err)
 
-        try:
-            await self._start_live_feed()
-        except Exception as err:
-            _LOGGER.warning("Could not automatically start live cook feed: %s", err)
+        if auto_start_feed:
+            # Request identification and start live feed
+            try:
+                await self.identify()
+            except Exception as err:
+                _LOGGER.debug("Identify query failed or skipped: %s", err)
+
+            try:
+                await self._start_live_feed()
+            except Exception as err:
+                _LOGGER.warning("Could not automatically start live cook feed: %s", err)
 
     async def _read_static_device_info(self) -> None:
         """Attempt to read static serial or version characteristics."""
@@ -246,19 +276,55 @@ class JouleClient:
     def _handle_notification(
         self, characteristic: BleakGATTCharacteristic, data: bytearray
     ) -> None:
-        """Handle raw notification chunks received from Joule."""
-        self._rx_buffer.extend(data)
+        """Handle raw notification received from Joule."""
+        if self._is_breville_profile:
+            self._rx_buffer.extend(data)
+            self._try_parse_rx_buffer()
+        else:
+            # ChefSteps Original Joule
+            if data:
+                self._rx_buffer.extend(data)
+                self._try_parse_rx_buffer()
+            else:
+                # Alert indicating data is waiting on UUID_CHEFSTEP_STREAM_READ
+                asyncio.create_task(self._read_chefsteps_stream())
 
-        # Try parsing message from accumulated buffer
+    async def _read_chefsteps_stream(self) -> None:
+        """Read a pending StreamMessage from ChefSteps read characteristic."""
+        if not self._client or not self._read_char:
+            return
+        async with self._read_lock:
+            try:
+                raw_bytes = await self._client.read_gatt_char(self._read_char)
+                if not raw_bytes:
+                    return
+                msg = joule_pb2.StreamMessage()
+                msg.ParseFromString(bytes(raw_bytes))
+                self._process_stream_message(msg)
+            except DecodeError as err:
+                _LOGGER.warning(
+                    "Failed to decode StreamMessage from ChefSteps read char: %s",
+                    err,
+                )
+            except BleakError as err:
+                _LOGGER.debug(
+                    "BLE error reading ChefSteps stream characteristic: %s",
+                    err,
+                )
+            except Exception as err:
+                _LOGGER.debug(
+                    "Error reading ChefSteps stream characteristic: %s",
+                    err,
+                )
+
+    def _try_parse_rx_buffer(self) -> None:
+        """Attempt to parse StreamMessage from the accumulated RX buffer."""
         try:
             msg = joule_pb2.StreamMessage()
             msg.ParseFromString(bytes(self._rx_buffer))
-            # Successfully parsed full message
             self._rx_buffer.clear()
             self._process_stream_message(msg)
         except DecodeError:
-            # Buffer contains partial message or corrupted stream
-            # If buffer gets unreasonably large, discard to avoid memory bloat
             if len(self._rx_buffer) > 4096:
                 _LOGGER.warning(
                     "Discarding corrupted RX buffer (%d bytes)",
@@ -268,6 +334,10 @@ class JouleClient:
 
     def _process_stream_message(self, msg: joule_pb2.StreamMessage) -> None:
         """Process a fully reassembled StreamMessage."""
+        if msg.HasField("senderAddress") and msg.senderAddress:
+            self._recipient_address = msg.senderAddress
+            self._device_info.recipient_address = msg.senderAddress
+
         # 1. Check for live telemetry CirculatorDataPoint
         if msg.HasField("circulatorDataPoint"):
             self._handle_circulator_data_point(msg.circulatorDataPoint)
@@ -296,8 +366,13 @@ class JouleClient:
             "dropFoodReply",
             "beginLiveFeedReply",
             "buttonPressReply",
+            "cancelButtonPressReply",
             "startKeyExchangeReply",
+            "cancelKeyExchangeReply",
+            "submitKeyReply",
             "submitBearerAuthTokenReply",
+            "setMessagingAddressReply",
+            "displayLedReply",
         ]
         for f in reply_fields:
             if msg.HasField(f):
@@ -347,6 +422,14 @@ class JouleClient:
         if not self.is_connected or not self._client or not self._write_char:
             raise JouleConnectionError("Not connected to Joule")
 
+        # Ensure required stream envelope headers are set
+        if not msg.HasField("handle"):
+            msg.handle = self._stream_handle
+        if not msg.HasField("senderAddress"):
+            msg.senderAddress = self._sender_address
+        if not msg.HasField("recipientAddress"):
+            msg.recipientAddress = self._recipient_address
+
         payload = msg.SerializeToString()
         reply_future: asyncio.Future[joule_pb2.StreamMessage] | None = None
 
@@ -383,8 +466,17 @@ class JouleClient:
             return None
 
         try:
-            return await asyncio.wait_for(reply_future, timeout=timeout)
+            return await asyncio.wait_for(asyncio.shield(reply_future), timeout=timeout)
         except TimeoutError as err:
+            # Fallback for ChefSteps: direct read on read characteristic
+            if not self._is_breville_profile and self._read_char:
+                try:
+                    await self._read_chefsteps_stream()
+                    if reply_future.done() and not reply_future.cancelled():
+                        return reply_future.result()
+                except Exception:
+                    pass
+
             if expected_reply is not None:
                 self._response_futures.pop(expected_reply, None)
             raise JouleTimeoutError(
@@ -559,9 +651,66 @@ class JouleClient:
             self._state.program_step = CookState.COOKING
             self._notify_listeners()
 
-    async def pair_or_authenticate(self, timeout: float = 30.0) -> JouleAuthData:
-        """Perform authenticated pairing / key exchange if required by firmware."""
-        # 1. Start key exchange request
+    async def request_button_press(
+        self,
+        duration_ms: int = 30000,
+        led_color: int = joule_pb2.LED_COLOR_WHITE,
+        led_pattern: int = joule_pb2.LED_PATTERN_BLINK,
+        timeout: float = 35.0,
+    ) -> bool:
+        """Request user to press the physical button on Joule with blinking LED."""
+        req = joule_pb2.ButtonPressRequest(
+            ledColor=cast(Any, led_color),
+            ledPattern=cast(Any, led_pattern),
+            durationMilliseconds=duration_ms,
+        )
+        msg = joule_pb2.StreamMessage()
+        msg.buttonPressRequest.CopyFrom(req)
+
+        reply = await self._send_message(
+            msg, expected_reply="buttonPressReply", timeout=timeout
+        )
+        if reply and reply.buttonPressReply.result == joule_pb2.CS_SUCCESS:
+            return True
+        return False
+
+    async def cancel_button_press(self) -> None:
+        """Cancel an in-progress button press request."""
+        req = joule_pb2.CancelButtonPressRequest()
+        msg = joule_pb2.StreamMessage()
+        msg.cancelButtonPressRequest.CopyFrom(req)
+        await self._send_message(
+            msg, expected_reply="cancelButtonPressReply", timeout=5.0
+        )
+
+    async def authenticate(
+        self,
+        secret_key: bytes | None = None,
+        timeout: float = DEFAULT_COMMAND_TIMEOUT,
+    ) -> bool:
+        """Authenticate with the Joule using an existing secret key."""
+        key = secret_key or (self._auth_data.secret_key if self._auth_data else None)
+        if not key:
+            raise JouleAuthenticationError("No secret key available for authentication")
+        if isinstance(key, str):
+            key = key.encode("utf-8")
+
+        req = joule_pb2.SubmitKeyRequest(secretKey=key)
+        msg = joule_pb2.StreamMessage()
+        msg.submitKeyRequest.CopyFrom(req)
+
+        reply = await self._send_message(
+            msg, expected_reply="submitKeyReply", timeout=timeout
+        )
+        if reply and reply.submitKeyReply.result == joule_pb2.CS_SUCCESS:
+            return True
+        res = reply.submitKeyReply.result if reply else None
+        raise JouleAuthenticationError(f"Authentication failed with result code {res}")
+
+    async def start_key_exchange(
+        self, timeout: float = DEFAULT_PAIR_TIMEOUT
+    ) -> JouleAuthData:
+        """Initiate key exchange to pair with the Joule and obtain a secret key."""
         req = joule_pb2.StartKeyExchangeRequest()
         msg = joule_pb2.StreamMessage()
         msg.startKeyExchangeRequest.CopyFrom(req)
@@ -572,10 +721,30 @@ class JouleClient:
         if not reply:
             raise JouleAuthenticationError("No reply to key exchange request")
 
-        token = reply.startKeyExchangeReply.token
+        res = reply.startKeyExchangeReply.result
+        if res != joule_pb2.CS_SUCCESS:
+            raise JouleAuthenticationError(
+                f"Start key exchange failed with result code {res}"
+            )
+
         secret = reply.startKeyExchangeReply.secretKey
-        self._auth_data = JouleAuthData(token=token, secret=secret)
+        self._auth_data = JouleAuthData(secret_key=secret, secret=secret)
         return self._auth_data
+
+    async def pair_or_authenticate(
+        self, timeout: float = DEFAULT_PAIR_TIMEOUT
+    ) -> JouleAuthData:
+        """Perform authenticated pairing / key exchange if required by firmware."""
+        if self._auth_data and (self._auth_data.secret_key or self._auth_data.secret):
+            try:
+                await self.authenticate(timeout=timeout)
+                return self._auth_data
+            except JouleAuthenticationError:
+                _LOGGER.debug(
+                    "Existing secret key rejected; falling back to key exchange"
+                )
+
+        return await self.start_key_exchange(timeout=timeout)
 
     async def disconnect(self) -> None:
         """Cleanly disconnect from the Joule."""
@@ -593,6 +762,7 @@ class JouleClient:
                 self._client = None
                 self._write_char = None
                 self._notify_char = None
+                self._read_char = None
 
         self._state.connected = False
         self._cleanup_pending_futures(JouleConnectionError("Client disconnected"))

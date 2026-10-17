@@ -125,14 +125,26 @@ class JouleDeviceInfo:
     firmware_version: str | None = None
     mac_address: str | None = None
     model_number: str | None = None
+    recipient_address: bytes | None = None
 
 
 @dataclass
 class JouleAuthData:
     """Authentication and pairing keys for Joule."""
 
+    secret_key: bytes | None = None
     token: str | None = None
     secret: str | bytes | None = None
+
+    def __post_init__(self) -> None:
+        """Ensure secret_key and secret stay synchronized."""
+        if self.secret_key is None and self.secret is not None:
+            if isinstance(self.secret, str):
+                self.secret_key = self.secret.encode("utf-8")
+            else:
+                self.secret_key = self.secret
+        elif self.secret is None and self.secret_key is not None:
+            self.secret = self.secret_key
 
 
 @dataclass
