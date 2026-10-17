@@ -645,7 +645,7 @@ async def test_client_chefsteps_alert_byte_triggers_read():
 
 @pytest.mark.asyncio
 async def test_client_write_response_modes():
-    """Test ChefSteps uses response=False and Breville uses response=True."""
+    """Test ChefSteps and Breville both use response=True for stream messages."""
     # Test ChefSteps
     cs_device = BLEDevice("11:22:33:44:55:66", "ChefSteps Joule", {})
     cs_client = JouleClient(cs_device)
@@ -672,8 +672,8 @@ async def test_client_write_response_modes():
     # Find the stream write call
     stream_writes = [w for w in cs_writes if w[0] == UUID_CHEFSTEP_STREAM_WRITE]
     assert len(stream_writes) == 1
-    # Must be response=False for ChefSteps!
-    assert stream_writes[0][1] is False
+    # Must be response=True for ChefSteps (Android WRITE_TYPE_DEFAULT)!
+    assert stream_writes[0][1] is True
 
     # Test Breville
     br_device = BLEDevice("66:55:44:33:22:11", "Joule Turbo", {})

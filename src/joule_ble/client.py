@@ -475,9 +475,7 @@ class JouleClient:
             chunk_size = self._max_payload_size
             offset = 0
 
-            write_with_response = self._is_breville_profile and (
-                "write" in self._write_char.properties
-            )
+            write_with_response = "write" in self._write_char.properties
             _LOGGER.debug(
                 "Sending StreamMessage (%d B, handle=%r, sender=%r, "
                 "recipient=%r, response=%s)",
@@ -492,12 +490,9 @@ class JouleClient:
                 chunk = payload[offset : offset + chunk_size]
                 offset += len(chunk)
                 try:
-                    # For Breville Joule Turbo (UUID_BREVILLE_APP_MESSAGE),
-                    # write with response.
-                    # For ChefSteps Original Joule (UUID_CHEFSTEP_STREAM_WRITE),
-                    # Android explicitly uses WRITE_TYPE_NO_RESPONSE (response=False)
-                    # for all characteristic writes except file transfer.
-                    # Firmware fails to route ATT Write Requests to stream handler.
+                    # Breville Joule Turbo (UUID_BREVILLE_APP_MESSAGE) and
+                    # ChefSteps Original Joule (UUID_CHEFSTEP_STREAM_WRITE) both use
+                    # write with response (Android WRITE_TYPE_DEFAULT / Write Request).
                     _LOGGER.debug(
                         "Writing BLE chunk to %s (%d B, response=%s, offset %d/%d)",
                         self._write_char.uuid,
