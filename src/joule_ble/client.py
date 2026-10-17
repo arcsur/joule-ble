@@ -480,7 +480,12 @@ class JouleClient:
             chunk_size = self._max_payload_size
             offset = 0
 
-            write_with_response = "write" in self._write_char.properties
+            # Breville Joule Turbo uses write with response
+            # (WRITE_TYPE_DEFAULT / Write Request).
+            # ChefSteps Original Joule uses write without response
+            # (WRITE_TYPE_NO_RESPONSE / Write Command) matching writeCharacteristic
+            # in the official Android app.
+            write_with_response = self._is_breville_profile
             _LOGGER.debug(
                 "Sending StreamMessage (%d B, handle=%r, sender=%r, "
                 "recipient=%r, response=%s)",
@@ -495,9 +500,6 @@ class JouleClient:
                 chunk = payload[offset : offset + chunk_size]
                 offset += len(chunk)
                 try:
-                    # Breville Joule Turbo (UUID_BREVILLE_APP_MESSAGE) and
-                    # ChefSteps Original Joule (UUID_CHEFSTEP_STREAM_WRITE) both use
-                    # write with response (Android WRITE_TYPE_DEFAULT / Write Request).
                     _LOGGER.debug(
                         "Writing BLE chunk to %s (%d B, response=%s, offset %d/%d)",
                         self._write_char.uuid,
@@ -511,10 +513,10 @@ class JouleClient:
                         chunk,
                         response=write_with_response,
                     )
-                    # When writing without response, insert a small pause between chunks
+                    # When writing without response, insert a pause between chunks
                     # to prevent peripheral BLE radio buffer overflow.
                     if offset < total_len and not write_with_response:
-                        await asyncio.sleep(0.01)
+                        await asyncio.sleep(0.02)
                 except BleakError as err:
                     if reply_future and expected_reply:
                         self._response_futures.pop(expected_reply, None)
