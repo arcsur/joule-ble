@@ -310,13 +310,19 @@ class JouleClient:
             # ChefSteps Original Joule:
             # Notifications on UUID_CHEFSTEP_STREAM_SUBSCRIBE are alerts
             # signalling that a StreamMessage is ready on
-            # UUID_CHEFSTEP_STREAM_READ. The raw notification payload is
-            # an alert byte/counter and not protobuf data.
+            # UUID_CHEFSTEP_STREAM_READ.
             _LOGGER.debug(
                 "ChefSteps stream notification alert received (%s),"
                 " triggering stream read",
                 data.hex() if data else "empty",
             )
+            if data and len(data) > 2:
+                try:
+                    msg = joule_pb2.StreamMessage()
+                    msg.ParseFromString(bytes(data))
+                    self._process_stream_message(msg)
+                except Exception:
+                    pass
             asyncio.create_task(self._read_chefsteps_stream())
 
     async def _read_chefsteps_stream(self) -> None:
@@ -475,54 +481,37 @@ class JouleClient:
             self._response_futures[expected_reply] = reply_future
 
         async with self._write_lock:
-            # Fragment payload into MTU chunks
-            total_len = len(payload)
-            chunk_size = self._max_payload_size
-            offset = 0
-
-            # Breville Joule Turbo uses write with response
-            # (WRITE_TYPE_DEFAULT / Write Request).
-            # ChefSteps Original Joule uses write without response
-            # (WRITE_TYPE_NO_RESPONSE / Write Command) matching writeCharacteristic
-            # in the official Android app.
-            write_with_response = self._is_breville_profile
+            # Stream messages on both ChefSteps (700b4322) and Breville
+            # (c6f2d9e3-..09) are sent as complete protobuf StreamMessages using
+            # Write Request (WRITE_TYPE_DEFAULT, response=True). Manual slicing by MTU
+            # corrupts discrete protobuf messages.
+            write_with_response = (
+                "write" in self._write_char.properties
+                if self._write_char.properties
+                else True
+            )
             _LOGGER.debug(
                 "Sending StreamMessage (%d B, handle=%r, sender=%r, "
                 "recipient=%r, response=%s)",
-                total_len,
+                len(payload),
                 msg.handle,
                 msg.senderAddress,
                 msg.recipientAddress,
                 write_with_response,
             )
 
-            while offset < total_len:
-                chunk = payload[offset : offset + chunk_size]
-                offset += len(chunk)
-                try:
-                    _LOGGER.debug(
-                        "Writing BLE chunk to %s (%d B, response=%s, offset %d/%d)",
-                        self._write_char.uuid,
-                        len(chunk),
-                        write_with_response,
-                        offset,
-                        total_len,
-                    )
-                    await self._client.write_gatt_char(
-                        self._write_char,
-                        chunk,
-                        response=write_with_response,
-                    )
-                    # When writing without response, insert a pause between chunks
-                    # to prevent peripheral BLE radio buffer overflow.
-                    if offset < total_len and not write_with_response:
-                        await asyncio.sleep(0.02)
-                except BleakError as err:
-                    if reply_future and expected_reply:
-                        self._response_futures.pop(expected_reply, None)
-                    raise JouleConnectionError(
-                        f"Failed to write BLE chunk: {err}"
-                    ) from err
+            try:
+                await self._client.write_gatt_char(
+                    self._write_char,
+                    payload,
+                    response=write_with_response,
+                )
+            except BleakError as err:
+                if reply_future and expected_reply:
+                    self._response_futures.pop(expected_reply, None)
+                raise JouleConnectionError(
+                    f"Failed to write BLE stream message: {err}"
+                ) from err
 
         if not reply_future:
             return None

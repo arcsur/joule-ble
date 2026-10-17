@@ -36,6 +36,7 @@ venv.bak/
 .ruff_cache/
 .coverage
 htmlcov/
+uv.lock
 
 # Local extraction and vendor artifacts
 Breville++Cooking_*

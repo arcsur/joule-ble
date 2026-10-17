@@ -671,8 +671,8 @@ async def test_client_write_response_modes():
     # Find the stream write call
     stream_writes = [w for w in cs_writes if w[0] == UUID_CHEFSTEP_STREAM_WRITE]
     assert len(stream_writes) == 1
-    # ChefSteps uses response=False (Android WRITE_TYPE_NO_RESPONSE on 700b4322)
-    assert stream_writes[0][1] is False
+    # ChefSteps uses response=True (Android WRITE_TYPE_DEFAULT on 700b4322)
+    assert stream_writes[0][1] is True
 
     # Test Breville
     br_device = BLEDevice("66:55:44:33:22:11", "Joule Turbo", {})
