@@ -701,3 +701,21 @@ async def test_client_write_response_modes():
     assert len(br_stream_writes) == 1
     # Must be response=True for Breville!
     assert br_stream_writes[0][1] is True
+
+
+@pytest.mark.asyncio
+async def test_pair_or_authenticate_chefsteps_skips_key_exchange():
+    """Test pair_or_authenticate immediately succeeds for ChefSteps."""
+    cs_device = BLEDevice("11:22:33:44:55:66", "ChefSteps Joule", {})
+    cs_client = JouleClient(cs_device)
+    cs_mock = create_mock_bleak_client("chefsteps")
+
+    with patch(
+        "joule_ble.client.establish_connection",
+        AsyncMock(return_value=cs_mock),
+    ):
+        await cs_client.connect(auto_start_feed=False)
+
+    auth = await cs_client.pair_or_authenticate()
+    assert auth is not None
+    assert auth.secret_key is None

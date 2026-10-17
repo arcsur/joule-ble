@@ -870,6 +870,14 @@ class JouleClient:
         self, timeout: float = DEFAULT_PAIR_TIMEOUT
     ) -> JouleAuthData:
         """Perform authenticated pairing / key exchange if required by firmware."""
+        if not self._is_breville_profile:
+            # ChefSteps Original Joule does not use key exchange authentication.
+            _LOGGER.debug(
+                "Skipping key exchange; ChefSteps Original Joule "
+                "does not use authentication"
+            )
+            return JouleAuthData()
+
         if self._auth_data and (self._auth_data.secret_key or self._auth_data.secret):
             try:
                 await self.authenticate(timeout=timeout)
