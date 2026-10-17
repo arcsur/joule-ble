@@ -608,3 +608,64 @@ async def test_client_chefsteps_alert_byte_triggers_read():
 
     assert client.state.bath_temp_c == 55.5
     assert client.state.program_step == CookState.COOKING
+
+
+@pytest.mark.asyncio
+async def test_client_write_response_modes():
+    """Test ChefSteps uses response=False and Breville uses response=True."""
+    # Test ChefSteps
+    cs_device = BLEDevice("11:22:33:44:55:66", "ChefSteps Joule", {})
+    cs_client = JouleClient(cs_device)
+    cs_mock = create_mock_bleak_client("chefsteps")
+
+    cs_writes = []
+
+    async def cs_fake_write(char, data, response=False):
+        cs_writes.append((char.uuid, response))
+        if char.uuid == UUID_CHEFSTEP_STREAM_WRITE:
+            reply = joule_pb2.StreamMessage()
+            reply.identifyCirculatorReply.name = "ChefSteps"
+            cs_client._resolve_pending_reply("identifyCirculatorReply", reply)
+
+    cs_mock.write_gatt_char.side_effect = cs_fake_write
+
+    with patch(
+        "joule_ble.client.establish_connection",
+        AsyncMock(return_value=cs_mock),
+    ):
+        await cs_client.connect(auto_start_feed=False)
+        await cs_client.identify()
+
+    # Find the stream write call
+    stream_writes = [w for w in cs_writes if w[0] == UUID_CHEFSTEP_STREAM_WRITE]
+    assert len(stream_writes) == 1
+    # Must be response=False for ChefSteps!
+    assert stream_writes[0][1] is False
+
+    # Test Breville
+    br_device = BLEDevice("66:55:44:33:22:11", "Joule Turbo", {})
+    br_client = JouleClient(br_device)
+    br_mock = create_mock_bleak_client("breville")
+
+    br_writes = []
+
+    async def br_fake_write(char, data, response=False):
+        br_writes.append((char.uuid, response))
+        if char.uuid == UUID_BREVILLE_APP_MESSAGE:
+            reply = joule_pb2.StreamMessage()
+            reply.identifyCirculatorReply.name = "Turbo"
+            br_client._resolve_pending_reply("identifyCirculatorReply", reply)
+
+    br_mock.write_gatt_char.side_effect = br_fake_write
+
+    with patch(
+        "joule_ble.client.establish_connection",
+        AsyncMock(return_value=br_mock),
+    ):
+        await br_client.connect(auto_start_feed=False)
+        await br_client.identify()
+
+    br_stream_writes = [w for w in br_writes if w[0] == UUID_BREVILLE_APP_MESSAGE]
+    assert len(br_stream_writes) == 1
+    # Must be response=True for Breville!
+    assert br_stream_writes[0][1] is True
