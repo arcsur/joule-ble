@@ -120,6 +120,16 @@ class JouleClient:
         """Return current live telemetry state."""
         return self._state
 
+    @property
+    def is_breville_profile(self) -> bool:
+        """Return True if connected via Breville GATT profile."""
+        return self._is_breville_profile
+
+    @property
+    def is_chefsteps_profile(self) -> bool:
+        """Return True if connected via ChefSteps GATT profile."""
+        return not self._is_breville_profile
+
     def register_callback(
         self, callback: Callable[[JouleState], None]
     ) -> Callable[[], None]:
