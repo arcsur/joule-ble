@@ -545,4 +545,3 @@ async def test_client_stream_envelope_headers():
     assert sent_msg.handle == 2389
     assert sent_msg.senderAddress == b"ABCDABCD"
     assert sent_msg.recipientAddress == b"0"
-
