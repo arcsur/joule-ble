@@ -80,16 +80,7 @@ class JouleClient:
             if isinstance(recipient_address, str):
                 norm_recipient = recipient_address.encode("utf-8")
             elif isinstance(recipient_address, (bytes, bytearray)):
-                try:
-                    recipient_address.decode("ascii")
-                    norm_recipient = bytes(recipient_address)
-                except UnicodeDecodeError:
-                    _LOGGER.warning(
-                        "Non-ASCII recipient address %r; converting to hex",
-                        recipient_address,
-                    )
-                    raw_hex = bytes(recipient_address).hex().lower()
-                    norm_recipient = raw_hex.encode("ascii")
+                norm_recipient = bytes(recipient_address)
 
         self._device_info: JouleDeviceInfo = JouleDeviceInfo(
             name=ble_device.name or "Joule",
@@ -241,26 +232,13 @@ class JouleClient:
         # Subscribe to notifications
         await self._client.start_notify(self._notify_char, self._handle_notification)
 
-        # For ChefSteps Original Joule, the firmware requires writing b"\x01"
-        # with response to UUID_CHEFSTEP_STREAM_SUBSCRIBE to activate stream
+        # For ChefSteps Original Joule, Nordic nRF BLE radio stack requires ~500ms
+        # to settle internal buffers post-subscription before accepting stream packets.
         if not self._is_breville_profile:
             _LOGGER.debug(
-                "Activating ChefSteps stream notifications (writing 0x01 to %s)",
-                self._notify_char.uuid,
+                "Waiting 500ms for ChefSteps BLE radio to settle post-subscription..."
             )
-            try:
-                can_write_with_response = "write" in self._notify_char.properties
-                await self._client.write_gatt_char(
-                    self._notify_char,
-                    bytearray([1]),
-                    response=can_write_with_response,
-                )
-                _LOGGER.debug("ChefSteps stream notifications activated")
-            except Exception as err:
-                _LOGGER.warning(
-                    "Failed to write activation byte to ChefSteps subscribe char: %s",
-                    err,
-                )
+            await asyncio.sleep(0.5)
 
         self._state.connected = True
         self._notify_listeners()
@@ -314,6 +292,12 @@ class JouleClient:
         self, characteristic: BleakGATTCharacteristic, data: bytearray
     ) -> None:
         """Handle raw notification received from Joule."""
+        _LOGGER.debug(
+            "GATT notification on %s: %d bytes (hex: %s)",
+            characteristic.uuid,
+            len(data) if data else 0,
+            data.hex() if data else "",
+        )
         if self._is_breville_profile:
             self._rx_buffer.extend(data)
             self._try_parse_rx_buffer()
@@ -491,6 +475,19 @@ class JouleClient:
             chunk_size = self._max_payload_size
             offset = 0
 
+            write_with_response = self._is_breville_profile and (
+                "write" in self._write_char.properties
+            )
+            _LOGGER.debug(
+                "Sending StreamMessage (%d B, handle=%r, sender=%r, "
+                "recipient=%r, response=%s)",
+                total_len,
+                msg.handle,
+                msg.senderAddress,
+                msg.recipientAddress,
+                write_with_response,
+            )
+
             while offset < total_len:
                 chunk = payload[offset : offset + chunk_size]
                 offset += len(chunk)
@@ -501,8 +498,13 @@ class JouleClient:
                     # Android explicitly uses WRITE_TYPE_NO_RESPONSE (response=False)
                     # for all characteristic writes except file transfer.
                     # Firmware fails to route ATT Write Requests to stream handler.
-                    write_with_response = self._is_breville_profile and (
-                        "write" in self._write_char.properties
+                    _LOGGER.debug(
+                        "Writing BLE chunk to %s (%d B, response=%s, offset %d/%d)",
+                        self._write_char.uuid,
+                        len(chunk),
+                        write_with_response,
+                        offset,
+                        total_len,
                     )
                     await self._client.write_gatt_char(
                         self._write_char,
@@ -558,16 +560,99 @@ class JouleClient:
                 reply.beginLiveFeedReply.result,
             )
 
+    def _get_recipient_candidates(self) -> list[bytes]:
+        """Generate candidate recipient addresses for ChefSteps Original Joule."""
+        candidates: list[bytes] = []
+
+        def _add(cand: bytes) -> None:
+            if cand and cand not in candidates:
+                candidates.append(cand)
+
+        clean_mac = self._ble_device.address.replace(":", "").replace("-", "")
+        # 1. Primary candidate: 6 raw binary MAC bytes
+        # (legacyJouleRecipientAddressBytes in Android APK)
+        if len(clean_mac) == 12:
+            try:
+                _add(bytes.fromhex(clean_mac))
+            except ValueError:
+                pass
+
+        # 2. Explicit or discovered address candidate if different
+        if (
+            self._recipient_address
+            and self._recipient_address != DEFAULT_RECIPIENT_ADDRESS
+        ):
+            _add(self._recipient_address)
+
+        # 3. ASCII hex representations (lowercase and uppercase)
+        if len(clean_mac) == 12:
+            _add(clean_mac.lower().encode("ascii"))
+            _add(clean_mac.upper().encode("ascii"))
+
+        # 4. Broadcast fallback address
+        _add(DEFAULT_RECIPIENT_ADDRESS)
+        return candidates
+
     async def identify(self) -> JouleDeviceInfo:
         """Send IdentifyCirculatorRequest to query device metadata."""
-        msg = joule_pb2.StreamMessage()
-        msg.identifyCirculatorRequest.CopyFrom(joule_pb2.IdentifyCirculatorRequest())
-        # ChefSteps circulator broadcast address is always b"0"
-        msg.recipientAddress = DEFAULT_RECIPIENT_ADDRESS
+        if self._is_breville_profile:
+            msg = joule_pb2.StreamMessage()
+            msg.identifyCirculatorRequest.CopyFrom(
+                joule_pb2.IdentifyCirculatorRequest()
+            )
+            msg.recipientAddress = self._recipient_address or DEFAULT_RECIPIENT_ADDRESS
+            await self._send_message(
+                msg, expected_reply="identifyCirculatorReply", timeout=5.0
+            )
+            return self._device_info
 
-        await self._send_message(
-            msg, expected_reply="identifyCirculatorReply", timeout=5.0
-        )
+        # ChefSteps Original Joule: negotiate recipient address across candidates
+        candidates = self._get_recipient_candidates()
+        last_error: Exception | None = None
+        for cand in candidates:
+            _LOGGER.debug(
+                "Attempting identify query with recipient=%r (%d candidates total)",
+                cand,
+                len(candidates),
+            )
+            msg = joule_pb2.StreamMessage()
+            msg.identifyCirculatorRequest.CopyFrom(
+                joule_pb2.IdentifyCirculatorRequest()
+            )
+            msg.recipientAddress = cand
+            try:
+                reply = await self._send_message(
+                    msg, expected_reply="identifyCirculatorReply", timeout=2.5
+                )
+                if reply:
+                    _LOGGER.info(
+                        "Identify query succeeded with recipientAddress=%r",
+                        cand,
+                    )
+                    if (
+                        not self._recipient_address
+                        or self._recipient_address == DEFAULT_RECIPIENT_ADDRESS
+                    ):
+                        self._recipient_address = cand
+                        self._device_info.recipient_address = cand
+                    return self._device_info
+            except JouleTimeoutError as err:
+                _LOGGER.debug(
+                    "Identify query timed out with recipientAddress=%r: %s",
+                    cand,
+                    err,
+                )
+                last_error = err
+            except Exception as err:
+                _LOGGER.debug(
+                    "Identify query error with recipientAddress=%r: %s",
+                    cand,
+                    err,
+                )
+                last_error = err
+
+        if last_error:
+            raise last_error
         return self._device_info
 
     async def start_cook(

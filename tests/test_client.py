@@ -522,17 +522,15 @@ async def test_client_request_button_press():
 @pytest.mark.asyncio
 async def test_client_stream_envelope_headers():
     """Test that stream envelope headers are correctly formatted."""
-    # Even if non-ASCII raw binary address is passed, client normalizes
-    # and identify must use b"0"
+    # When raw binary MAC address is passed, client sends it as recipientAddress
     device = BLEDevice("CD:F6:E0:B4:F7:5D", "DagusJoule", {})
-    client = JouleClient(device, recipient_address=b"\xcd\xf6\xe0\xb4\xf7\x5d")
+    raw_mac_bytes = b"\xcd\xf6\xe0\xb4\xf7\x5d"
+    client = JouleClient(device, recipient_address=raw_mac_bytes)
     mock_bleak = create_mock_bleak_client("chefsteps")
 
     captured_messages: list[joule_pb2.StreamMessage] = []
 
     async def fake_write(char, data, response=False):
-        if data == bytearray([1]):
-            return
         sent = joule_pb2.StreamMessage()
         sent.ParseFromString(bytes(data))
         captured_messages.append(sent)
@@ -558,12 +556,12 @@ async def test_client_stream_envelope_headers():
     sent_msg = captured_messages[0]
     assert sent_msg.handle == 2389
     assert sent_msg.senderAddress == b"ABCDABCD"
-    assert sent_msg.recipientAddress == b"0"
+    assert sent_msg.recipientAddress == raw_mac_bytes
 
 
 @pytest.mark.asyncio
-async def test_client_connect_activates_chefsteps_stream():
-    """Test ChefSteps connect writes 0x01 to notify_char to activate stream."""
+async def test_client_connect_subscribes_chefsteps_stream():
+    """Test ChefSteps connect starts notify without bogus write on subscribe char."""
     device = BLEDevice("11:22:33:44:55:66", "ChefSteps Joule", {})
     client = JouleClient(device)
     mock_bleak = create_mock_bleak_client("chefsteps")
@@ -574,14 +572,49 @@ async def test_client_connect_activates_chefsteps_stream():
     ):
         await client.connect(auto_start_feed=False)
 
-    # Verify write_gatt_char called with bytearray([1]) on subscribe char
-    calls = mock_bleak.write_gatt_char.call_args_list
-    assert len(calls) >= 1
-    subscribe_call = calls[0]
-    char_arg, data_arg = subscribe_call[0][0], subscribe_call[0][1]
-    assert char_arg.uuid == UUID_CHEFSTEP_STREAM_SUBSCRIBE
-    assert data_arg == bytearray([1])
-    assert subscribe_call[1].get("response") is True
+    # Verify start_notify was called for subscribe characteristic
+    mock_bleak.start_notify.assert_called_once()
+    notify_call_char = mock_bleak.start_notify.call_args[0][0]
+    assert notify_call_char.uuid == UUID_CHEFSTEP_STREAM_SUBSCRIBE
+
+    # Verify write_gatt_char was NOT called (no bogus 0x01 write on subscribe)
+    mock_bleak.write_gatt_char.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_client_identify_candidate_negotiation():
+    """Test ChefSteps identify negotiates across candidate addresses on timeout."""
+    device = BLEDevice("CD:F6:E0:B4:F7:5D", "DagusJoule", {})
+    client = JouleClient(device)
+    mock_bleak = create_mock_bleak_client("chefsteps")
+
+    attempted_recipients: list[bytes] = []
+
+    async def fake_write(char, data, response=False):
+        sent = joule_pb2.StreamMessage()
+        sent.ParseFromString(bytes(data))
+        attempted_recipients.append(sent.recipientAddress)
+        # Fail the first candidate (raw MAC bytes), but succeed on second (ascii hex)
+        if sent.recipientAddress == b"cdf6e0b4f75d":
+            reply = joule_pb2.StreamMessage()
+            reply.senderAddress = b"cdf6e0b4f75d"
+            reply.identifyCirculatorReply.name = "DagusJoule"
+            client._resolve_pending_reply("identifyCirculatorReply", reply)
+
+    mock_bleak.write_gatt_char.side_effect = fake_write
+
+    with patch(
+        "joule_ble.client.establish_connection",
+        AsyncMock(return_value=mock_bleak),
+    ):
+        await client.connect(auto_start_feed=False)
+        info = await client.identify()
+
+    assert info.name == "DagusJoule"
+    # First attempt was raw 6 MAC bytes, second was b"cdf6e0b4f75d"
+    assert attempted_recipients[0] == b"\xcd\xf6\xe0\xb4\xf7\x5d"
+    assert attempted_recipients[1] == b"cdf6e0b4f75d"
+    assert client.device_info.recipient_address == b"cdf6e0b4f75d"
 
 
 @pytest.mark.asyncio
