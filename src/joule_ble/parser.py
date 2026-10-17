@@ -34,6 +34,12 @@ class JouleBluetoothDeviceData:
         if service_uuids.intersection(JOULE_SERVICE_UUIDS):
             return True
 
+        if (
+            advertisement_data.manufacturer_data
+            and CHEFSTEPS_MANUFACTURER_ID in advertisement_data.manufacturer_data
+        ):
+            return True
+
         local_name = advertisement_data.local_name or ""
         return local_name.lower().startswith("joule")
 
@@ -60,17 +66,12 @@ class JouleBluetoothDeviceData:
         recipient_address: bytes | None = DEFAULT_RECIPIENT_ADDRESS
         # Check manufacturer data if available
         if advertisement_data.manufacturer_data:
-            if CHEFSTEPS_MANUFACTURER_ID in advertisement_data.manufacturer_data:
-                mfg = advertisement_data.manufacturer_data[CHEFSTEPS_MANUFACTURER_ID]
-                if len(mfg) > 1:
-                    recipient_address = mfg[1:].hex().lower().encode("ascii")
-                elif len(mfg) == 1:
-                    recipient_address = DEFAULT_RECIPIENT_ADDRESS
-
             for _, data in advertisement_data.manufacturer_data.items():
                 if len(data) >= 8:
                     try:
-                        serial_number = data.decode("utf-8", errors="ignore").strip()
+                        decoded = data.decode("utf-8", errors="ignore").strip()
+                        if decoded.isprintable() and len(decoded) >= 8:
+                            serial_number = decoded
                     except Exception:
                         pass
 

@@ -563,14 +563,9 @@ class JouleClient:
             if cand and cand not in candidates:
                 candidates.append(cand)
 
-        clean_mac = self._ble_device.address.replace(":", "").replace("-", "")
-        # 1. Primary candidate: 6 raw binary MAC bytes
-        # (legacyJouleRecipientAddressBytes in Android APK)
-        if len(clean_mac) == 12:
-            try:
-                _add(bytes.fromhex(clean_mac))
-            except ValueError:
-                pass
+        # 1. Primary broadcast address ("0") used by official app during
+        # discovery/pairing
+        _add(DEFAULT_RECIPIENT_ADDRESS)
 
         # 2. Explicit or discovered address candidate if different
         if (
@@ -579,13 +574,19 @@ class JouleClient:
         ):
             _add(self._recipient_address)
 
-        # 3. ASCII hex representations (lowercase and uppercase)
+        clean_mac = self._ble_device.address.replace(":", "").replace("-", "")
+        # 3. 6 raw binary MAC bytes (legacyJouleRecipientAddressBytes in Android APK)
+        if len(clean_mac) == 12:
+            try:
+                _add(bytes.fromhex(clean_mac))
+            except ValueError:
+                pass
+
+        # 4. ASCII hex representations (lowercase and uppercase)
         if len(clean_mac) == 12:
             _add(clean_mac.lower().encode("ascii"))
             _add(clean_mac.upper().encode("ascii"))
 
-        # 4. Broadcast fallback address
-        _add(DEFAULT_RECIPIENT_ADDRESS)
         return candidates
 
     async def identify(self) -> JouleDeviceInfo:
@@ -624,12 +625,8 @@ class JouleClient:
                         "Identify query succeeded with recipientAddress=%r",
                         cand,
                     )
-                    if (
-                        not self._recipient_address
-                        or self._recipient_address == DEFAULT_RECIPIENT_ADDRESS
-                    ):
-                        self._recipient_address = cand
-                        self._device_info.recipient_address = cand
+                    self._recipient_address = cand
+                    self._device_info.recipient_address = cand
                     return self._device_info
             except JouleTimeoutError as err:
                 _LOGGER.debug(

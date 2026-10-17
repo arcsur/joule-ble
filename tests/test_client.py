@@ -21,6 +21,7 @@ from joule_ble import (
     JouleTimeoutError,
 )
 from joule_ble.const import (
+    DEFAULT_RECIPIENT_ADDRESS,
     UUID_BREVILLE_APP_MESSAGE,
     UUID_BREVILLE_APPLIANCE_MESSAGE,
     UUID_BREVILLE_SERIAL_NUMBER,
@@ -522,10 +523,8 @@ async def test_client_request_button_press():
 @pytest.mark.asyncio
 async def test_client_stream_envelope_headers():
     """Test that stream envelope headers are correctly formatted."""
-    # When raw binary MAC address is passed, client sends it as recipientAddress
     device = BLEDevice("CD:F6:E0:B4:F7:5D", "DagusJoule", {})
-    raw_mac_bytes = b"\xcd\xf6\xe0\xb4\xf7\x5d"
-    client = JouleClient(device, recipient_address=raw_mac_bytes)
+    client = JouleClient(device)
     mock_bleak = create_mock_bleak_client("chefsteps")
 
     captured_messages: list[joule_pb2.StreamMessage] = []
@@ -556,7 +555,7 @@ async def test_client_stream_envelope_headers():
     sent_msg = captured_messages[0]
     assert sent_msg.handle == 2389
     assert sent_msg.senderAddress == b"ABCDABCD"
-    assert sent_msg.recipientAddress == raw_mac_bytes
+    assert sent_msg.recipientAddress == DEFAULT_RECIPIENT_ADDRESS
 
 
 @pytest.mark.asyncio
@@ -594,8 +593,8 @@ async def test_client_identify_candidate_negotiation():
         sent = joule_pb2.StreamMessage()
         sent.ParseFromString(bytes(data))
         attempted_recipients.append(sent.recipientAddress)
-        # Fail the first candidate (raw MAC bytes), but succeed on second (ascii hex)
-        if sent.recipientAddress == b"cdf6e0b4f75d":
+        # Fail candidate 1 (DEFAULT_RECIPIENT_ADDRESS b"0"), succeed on candidate 2
+        if sent.recipientAddress == b"\xcd\xf6\xe0\xb4\xf7\x5d":
             reply = joule_pb2.StreamMessage()
             reply.senderAddress = b"cdf6e0b4f75d"
             reply.identifyCirculatorReply.name = "DagusJoule"
@@ -611,10 +610,10 @@ async def test_client_identify_candidate_negotiation():
         info = await client.identify()
 
     assert info.name == "DagusJoule"
-    # First attempt was raw 6 MAC bytes, second was b"cdf6e0b4f75d"
-    assert attempted_recipients[0] == b"\xcd\xf6\xe0\xb4\xf7\x5d"
-    assert attempted_recipients[1] == b"cdf6e0b4f75d"
-    assert client.device_info.recipient_address == b"cdf6e0b4f75d"
+    # First attempt was DEFAULT_RECIPIENT_ADDRESS (b"0"), second was raw 6 MAC bytes
+    assert attempted_recipients[0] == DEFAULT_RECIPIENT_ADDRESS
+    assert attempted_recipients[1] == b"\xcd\xf6\xe0\xb4\xf7\x5d"
+    assert client.device_info.recipient_address == b"\xcd\xf6\xe0\xb4\xf7\x5d"
 
 
 @pytest.mark.asyncio
