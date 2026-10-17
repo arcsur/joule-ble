@@ -505,3 +505,44 @@ async def test_client_request_button_press():
     assert pressed is True
 
     await client.cancel_button_press()
+
+
+@pytest.mark.asyncio
+async def test_client_stream_envelope_headers():
+    """Test that stream envelope headers are correctly formatted."""
+    # Even if non-ASCII raw binary address is passed, client normalizes
+    # and identify must use b"0"
+    device = BLEDevice("CD:F6:E0:B4:F7:5D", "DagusJoule", {})
+    client = JouleClient(device, recipient_address=b"\xcd\xf6\xe0\xb4\xf7\x5d")
+    mock_bleak = create_mock_bleak_client("chefsteps")
+
+    captured_messages: list[joule_pb2.StreamMessage] = []
+
+    async def fake_write(char, data, response=False):
+        sent = joule_pb2.StreamMessage()
+        sent.ParseFromString(bytes(data))
+        captured_messages.append(sent)
+        if sent.HasField("identifyCirculatorRequest"):
+            reply = joule_pb2.StreamMessage()
+            reply.handle = 2389
+            reply.senderAddress = b"cdf6e0b4f75d"
+            reply.recipientAddress = b"ABCDABCD"
+            reply.identifyCirculatorReply.name = "DagusJoule"
+            client._resolve_pending_reply("identifyCirculatorReply", reply)
+
+    mock_bleak.write_gatt_char.side_effect = fake_write
+
+    with patch(
+        "joule_ble.client.establish_connection",
+        AsyncMock(return_value=mock_bleak),
+    ):
+        await client.connect(auto_start_feed=False)
+        info = await client.identify()
+
+    assert info.name == "DagusJoule"
+    assert len(captured_messages) == 1
+    sent_msg = captured_messages[0]
+    assert sent_msg.handle == 2389
+    assert sent_msg.senderAddress == b"ABCDABCD"
+    assert sent_msg.recipientAddress == b"0"
+

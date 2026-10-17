@@ -91,7 +91,7 @@ def test_parser_manufacturer_data_recipient_address():
     """Test extracting recipient address from ChefSteps manufacturer data 0x0159."""
     parser = JouleBluetoothDeviceData()
     ble_device = BLEDevice("CD:F6:E0:B4:F7:5D", "Joule", {})
-    mfg_bytes = b"\x01CDF6E0B4"
+    mfg_bytes = b"\x01\xcd\xf6\xe0\xb4\xf7\x5d"
     adv_data = AdvertisementData(
         local_name="Joule",
         manufacturer_data={345: mfg_bytes},
@@ -103,4 +103,4 @@ def test_parser_manufacturer_data_recipient_address():
     )
     info = parser.update(ble_device, adv_data)
     assert info is not None
-    assert info.recipient_address == b"CDF6E0B4"
+    assert info.recipient_address == b"cdf6e0b4f75d"

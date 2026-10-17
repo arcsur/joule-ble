@@ -75,11 +75,27 @@ class JouleClient:
         self._read_char: BleakGATTCharacteristic | None = None
         self._is_breville_profile: bool = False
 
+        norm_recipient: bytes = DEFAULT_RECIPIENT_ADDRESS
+        if recipient_address:
+            if isinstance(recipient_address, str):
+                norm_recipient = recipient_address.encode("utf-8")
+            elif isinstance(recipient_address, (bytes, bytearray)):
+                try:
+                    recipient_address.decode("ascii")
+                    norm_recipient = bytes(recipient_address)
+                except UnicodeDecodeError:
+                    _LOGGER.warning(
+                        "Non-ASCII recipient address %r; converting to hex",
+                        recipient_address,
+                    )
+                    raw_hex = bytes(recipient_address).hex().lower()
+                    norm_recipient = raw_hex.encode("ascii")
+
         self._device_info: JouleDeviceInfo = JouleDeviceInfo(
             name=ble_device.name or "Joule",
             model=model,
             mac_address=ble_device.address,
-            recipient_address=recipient_address,
+            recipient_address=norm_recipient,
         )
         self._state: JouleState = JouleState()
         self._callbacks: list[Callable[[JouleState], None]] = []
@@ -91,7 +107,7 @@ class JouleClient:
         self._max_payload_size = DEFAULT_ATT_PAYLOAD_SIZE
         self._stream_handle: int = DEFAULT_STREAM_HANDLE
         self._sender_address: bytes = DEFAULT_SENDER_ADDRESS
-        self._recipient_address: bytes = recipient_address or DEFAULT_RECIPIENT_ADDRESS
+        self._recipient_address: bytes = norm_recipient
 
     @property
     def is_connected(self) -> bool:
@@ -504,6 +520,8 @@ class JouleClient:
         """Send IdentifyCirculatorRequest to query device metadata."""
         msg = joule_pb2.StreamMessage()
         msg.identifyCirculatorRequest.CopyFrom(joule_pb2.IdentifyCirculatorRequest())
+        # ChefSteps circulator broadcast address is always b"0"
+        msg.recipientAddress = DEFAULT_RECIPIENT_ADDRESS
 
         await self._send_message(
             msg, expected_reply="identifyCirculatorReply", timeout=5.0
@@ -698,6 +716,7 @@ class JouleClient:
         req = joule_pb2.SubmitKeyRequest(secretKey=key)
         msg = joule_pb2.StreamMessage()
         msg.submitKeyRequest.CopyFrom(req)
+        msg.recipientAddress = self._recipient_address or DEFAULT_RECIPIENT_ADDRESS
 
         reply = await self._send_message(
             msg, expected_reply="submitKeyReply", timeout=timeout
@@ -714,6 +733,7 @@ class JouleClient:
         req = joule_pb2.StartKeyExchangeRequest()
         msg = joule_pb2.StreamMessage()
         msg.startKeyExchangeRequest.CopyFrom(req)
+        msg.recipientAddress = self._recipient_address or DEFAULT_RECIPIENT_ADDRESS
 
         reply = await self._send_message(
             msg, expected_reply="startKeyExchangeReply", timeout=timeout

@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 from .const import (
     CHEFSTEPS_MANUFACTURER_ID,
+    DEFAULT_RECIPIENT_ADDRESS,
     JOULE_SERVICE_UUIDS,
     UUID_BREVILLE_SERVICE,
     UUID_CHEFSTEP_STREAM_SERVICE,
@@ -56,15 +57,15 @@ class JouleBluetoothDeviceData:
             model = JouleModel.ORIGINAL_JOULE
 
         serial_number: str | None = None
-        recipient_address: bytes | None = None
+        recipient_address: bytes | None = DEFAULT_RECIPIENT_ADDRESS
         # Check manufacturer data if available
         if advertisement_data.manufacturer_data:
             if CHEFSTEPS_MANUFACTURER_ID in advertisement_data.manufacturer_data:
                 mfg = advertisement_data.manufacturer_data[CHEFSTEPS_MANUFACTURER_ID]
                 if len(mfg) > 1:
-                    recipient_address = mfg[1:]
+                    recipient_address = mfg[1:].hex().lower().encode("ascii")
                 elif len(mfg) == 1:
-                    recipient_address = mfg
+                    recipient_address = DEFAULT_RECIPIENT_ADDRESS
 
             for _, data in advertisement_data.manufacturer_data.items():
                 if len(data) >= 8:
