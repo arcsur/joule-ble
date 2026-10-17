@@ -288,16 +288,11 @@ class JouleClient:
             except Exception as err:
                 _LOGGER.debug("Identify query failed or skipped: %s", err)
 
-            # BeginLiveFeed is a Breville FreeRTOS-only command.
-            # ChefSteps Original Joule streams telemetry automatically when subscribed
-            # or during an active cook.
-            if self._is_breville_profile:
-                try:
-                    await self._start_live_feed()
-                except Exception as err:
-                    _LOGGER.warning(
-                        "Could not automatically start live cook feed: %s", err
-                    )
+            # Start live cook feed to receive telemetry
+            try:
+                await self._start_live_feed()
+            except Exception as err:
+                _LOGGER.warning("Could not automatically start live cook feed: %s", err)
 
         # ChefSteps requires periodic KeepAlive to prevent idle disconnect
         if not self._is_breville_profile:
@@ -459,21 +454,32 @@ class JouleClient:
     def _handle_circulator_data_point(self, dp: joule_pb2.CirculatorDataPoint) -> None:
         """Update internal state from incoming CirculatorDataPoint."""
         self._state.connected = True
-        self._state.bath_temp_c = round(dp.bathTemp, 2)
-        self._state.heater_temp_c = round(dp.heaterTemp, 2)
-        self._state.upper_board_temp_c = round(dp.upperBoardTemp, 2)
-        self._state.lower_board_temp_c = round(dp.lowerBoardTemp, 2)
-        self._state.motor_rpm = dp.motorRPM
-        self._state.heater_pwm = dp.heaterPWM
-        self._state.time_remaining_seconds = int(dp.timeRemaining)
-        self._state.program_step = CookState.from_proto(dp.programStep)
-        self._state.error_state = ErrorState.from_proto(dp.errorState)
-        self._state.motor_fault = bool(dp.motorFaultFlag)
+        if dp.HasField("bathTemp"):
+            self._state.bath_temp_c = round(dp.bathTemp, 2)
+        if dp.HasField("heaterTemp"):
+            self._state.heater_temp_c = round(dp.heaterTemp, 2)
+        if dp.HasField("upperBoardTemp"):
+            self._state.upper_board_temp_c = round(dp.upperBoardTemp, 2)
+        if dp.HasField("lowerBoardTemp"):
+            self._state.lower_board_temp_c = round(dp.lowerBoardTemp, 2)
+        if dp.HasField("motorRPM"):
+            self._state.motor_rpm = dp.motorRPM
+        if dp.HasField("heaterPWM"):
+            self._state.heater_pwm = dp.heaterPWM
+        if dp.HasField("timeRemaining"):
+            self._state.time_remaining_seconds = int(dp.timeRemaining)
+        if dp.HasField("programStep"):
+            self._state.program_step = CookState.from_proto(dp.programStep)
+        if dp.HasField("errorState"):
+            self._state.error_state = ErrorState.from_proto(dp.errorState)
+        if dp.HasField("motorFaultFlag"):
+            self._state.motor_fault = bool(dp.motorFaultFlag)
 
         # Infer low water level: error state active with no motor RPM
-        if dp.errorState != joule_pb2.NO_ERROR and dp.motorRPM == 0:
-            self._state.low_water = True
-        elif dp.errorState == joule_pb2.NO_ERROR:
+        if dp.HasField("errorState") and dp.errorState != joule_pb2.NO_ERROR:
+            if dp.HasField("motorRPM") and dp.motorRPM == 0:
+                self._state.low_water = True
+        elif dp.HasField("errorState") and dp.errorState == joule_pb2.NO_ERROR:
             self._state.low_water = False
 
         self._state.last_updated = time.time()
@@ -509,23 +515,19 @@ class JouleClient:
             msg.recipientAddress = self._recipient_address
 
         payload = msg.SerializeToString()
-        reply_future: asyncio.Future[joule_pb2.StreamMessage] | None = None
 
-        async with self._stream_lock:
-            if expected_reply:
-                loop = asyncio.get_running_loop()
-                reply_future = loop.create_future()
-                self._response_futures[expected_reply] = reply_future
+        write_with_response = (
+            "write" in self._write_char.properties
+            if self._write_char.properties
+            else True
+        )
 
-            # Stream messages on both ChefSteps (700b4322) and Breville
-            # (c6f2d9e3-..09) are sent as complete protobuf StreamMessages using
-            # Write Request (WRITE_TYPE_DEFAULT, response=True). Manual slicing by MTU
-            # corrupts discrete protobuf messages.
-            write_with_response = (
-                "write" in self._write_char.properties
-                if self._write_char.properties
-                else True
-            )
+        client = self._client
+        write_char = self._write_char
+        assert client is not None
+        assert write_char is not None
+
+        async def _do_write() -> None:
             _LOGGER.debug(
                 "Sending StreamMessage (%d B, handle=%r, sender=%r, "
                 "recipient=%r, response=%s)",
@@ -535,22 +537,34 @@ class JouleClient:
                 msg.recipientAddress,
                 write_with_response,
             )
+            async with self._write_lock:
+                try:
+                    await client.write_gatt_char(
+                        write_char,
+                        payload,
+                        response=write_with_response,
+                    )
+                except BleakError as err:
+                    raise JouleConnectionError(
+                        f"Failed to write BLE stream message: {err}"
+                    ) from err
+
+        if expected_reply is None:
+            # Fire-and-forget message (KeepAlive or unacknowledged feed requests)
+            await _do_write()
+            return None
+
+        # Request-reply command: serialize across other commands under stream_lock
+        async with self._stream_lock:
+            loop = asyncio.get_running_loop()
+            reply_future: asyncio.Future[joule_pb2.StreamMessage] = loop.create_future()
+            self._response_futures[expected_reply] = reply_future
 
             try:
-                await self._client.write_gatt_char(
-                    self._write_char,
-                    payload,
-                    response=write_with_response,
-                )
-            except BleakError as err:
-                if reply_future and expected_reply:
-                    self._response_futures.pop(expected_reply, None)
-                raise JouleConnectionError(
-                    f"Failed to write BLE stream message: {err}"
-                ) from err
-
-            if not reply_future:
-                return None
+                await _do_write()
+            except Exception:
+                self._response_futures.pop(expected_reply, None)
+                raise
 
             try:
                 return await asyncio.wait_for(
@@ -566,8 +580,7 @@ class JouleClient:
                     except Exception:
                         pass
 
-                if expected_reply is not None:
-                    self._response_futures.pop(expected_reply, None)
+                self._response_futures.pop(expected_reply, None)
                 raise JouleTimeoutError(
                     f"Timed out waiting for {expected_reply} after {timeout}s"
                 ) from err
@@ -609,6 +622,22 @@ class JouleClient:
 
     async def _start_live_feed(self) -> None:
         """Send BeginLiveFeed request to start streaming cook telemetry."""
+        if not self._is_breville_profile:
+            # ChefSteps Original Joule: mobile app issues describeFeedRequest
+            # then beginLiveFeed
+            desc_msg = joule_pb2.StreamMessage()
+            desc_msg.describeFeedRequest.feedId = joule_pb2.COOK_DATA
+            await self._send_message(desc_msg, expected_reply=None)
+
+            msg = joule_pb2.StreamMessage()
+            msg.beginLiveFeed.feedType = joule_pb2.COOK_DATA
+            await self._send_message(msg, expected_reply=None)
+            _LOGGER.debug(
+                "Sent describeFeedRequest and beginLiveFeed (COOK_DATA) to "
+                "ChefSteps Joule"
+            )
+            return
+
         req = joule_pb2.BeginLiveFeed()
         req.feedType = joule_pb2.COOK_DATA
 
@@ -810,7 +839,8 @@ class JouleClient:
         )
         if reply:
             res = reply.stopCirculatorReply.result
-            if res != joule_pb2.CS_SUCCESS:
+            # Code 8 (CS_ERROR_INVALID_STATE) indicates circulator is already stopped
+            if res not in (joule_pb2.CS_SUCCESS, joule_pb2.CS_ERROR_INVALID_STATE):
                 raise JouleCommandError(
                     f"Stop circulator failed with code {res}", result_code=res
                 )
@@ -833,7 +863,13 @@ class JouleClient:
         )
         if reply:
             res = reply.clearErrorReply.result
-            if res != joule_pb2.CS_SUCCESS:
+            # Code 8 (CS_ERROR_INVALID_STATE) or 3 (CS_ERROR_INTERNAL) indicates
+            # no active error to clear
+            if res not in (
+                joule_pb2.CS_SUCCESS,
+                joule_pb2.CS_ERROR_INVALID_STATE,
+                joule_pb2.CS_ERROR_INTERNAL,
+            ):
                 raise JouleCommandError(
                     f"Clear error failed with code {res}", result_code=res
                 )
@@ -898,17 +934,23 @@ class JouleClient:
 
     async def authenticate(
         self,
-        secret_key: bytes | None = None,
+        secret_key: bytes | str | None = None,
         timeout: float = DEFAULT_COMMAND_TIMEOUT,
     ) -> bool:
         """Authenticate with the Joule using an existing secret key."""
         key = secret_key or (self._auth_data.secret_key if self._auth_data else None)
         if not key:
             raise JouleAuthenticationError("No secret key available for authentication")
+        secret_bytes: bytes
         if isinstance(key, str):
-            key = key.encode("utf-8")
+            try:
+                secret_bytes = bytes.fromhex(key)
+            except ValueError:
+                secret_bytes = key.encode("utf-8")
+        else:
+            secret_bytes = key
 
-        req = joule_pb2.SubmitKeyRequest(secretKey=key)
+        req = joule_pb2.SubmitKeyRequest(secretKey=secret_bytes)
         msg = joule_pb2.StreamMessage()
         msg.submitKeyRequest.CopyFrom(req)
         msg.recipientAddress = self._recipient_address or DEFAULT_RECIPIENT_ADDRESS

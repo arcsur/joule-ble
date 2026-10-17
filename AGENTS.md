@@ -39,19 +39,24 @@
 - Send a periodic `KeepAlive` message (`StreamMessage.keepAlive`) every 3 seconds to `700b4322` without waiting for a reply to maintain the connection.
 - Cancel the keepalive task cleanly upon disconnection.
 
-### 5. Never Send BeginLiveFeed to ChefSteps Devices
-- `BeginLiveFeed` (`feedType=COOK_DATA`, field 70) is exclusive to Breville FreeRTOS (`CS30001`).
-- ChefSteps Original Joule firmware does not implement `BeginLiveFeed`. Sending it stalls the BLE stream for 5 seconds waiting for `beginLiveFeedReply` and destabilizes subsequent commands.
-- Telemetry on ChefSteps streams automatically via notifications on `700b4325` when subscribed or during active cooking.
+### 5. ChefSteps Cook Data Feed Activation
+- ChefSteps Original Joule firmware requires sending `describeFeedRequest` (`feedId=COOK_DATA`) followed by `beginLiveFeed` (`feedType=COOK_DATA`) fire-and-forget (`expected_reply=None`).
+- **Never wait synchronously for `beginLiveFeedReply` on ChefSteps devices**; the official app sends these asynchronously without awaiting a synchronous reply future. Awaiting a reply times out and aborts connection setup.
 
-### 6. Atomic Stream Transaction Locking & Clean CirculatorProgram Fields
-- The request-reply cycle on `700b4322` / `700b4323` must be serialized under a single transaction lock (`_stream_lock`). Never issue pipelined writes while awaiting a command reply.
+### 6. Atomic Stream Transaction Locking & Non-blocking KeepAlive
+- Request-reply commands on `700b4322` / `700b4323` must be serialized under a single transaction lock (`_stream_lock`). Never issue pipelined writes while awaiting a command reply.
+- However, raw GATT characteristic writes are guarded by `_write_lock`, which is released immediately upon write completion.
+- Periodic `KeepAlive` heartbeats (and other fire-and-forget writes) do **NOT** acquire `_stream_lock`; they only acquire `_write_lock`. This prevents KeepAlive starvation and BLE link drops while awaiting long reply operations (e.g. user physical button press during key exchange).
 - When constructing `StartProgramRequest`:
   - If `cookTime` is active/positive (>0), `programType` **MUST** be set to `AUTOMATIC` (`1`).
   - If `cookTime` is 0 or not active (manual cook), `programType` **MUST** be set to `MANUAL` (`0`), and `cookTime` **MUST NOT** be serialized into the message.
   - Only populate optional fields (`delayedStart`, `holdingTemperature`) when active/non-zero. Explicitly setting `holdingTemperature=0.0` or `delayedStart=0` can cause firmware validation failure.
 
-### 7. Running Tests & Quality Checks
+### 7. Tolerant State Handling on Stop and Clear Errors
+- Sending `StopCirculatorRequest` to an idle or already-stopped circulator returns `CS_ERROR_INVALID_STATE` (code 8). Treat this as success.
+- Sending `ClearErrorRequest` when no hardware fault is active returns `CS_ERROR_INVALID_STATE` (code 8) or `CS_ERROR_INTERNAL` (code 3). Treat these as successful no-ops.
+
+### 8. Running Tests & Quality Checks
 ```bash
 # Lint & format
 uv run ruff check src tests

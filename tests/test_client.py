@@ -826,8 +826,8 @@ async def test_client_start_cook_circulator_program_fields():
 
 
 @pytest.mark.asyncio
-async def test_client_connect_skips_live_feed_on_chefsteps():
-    """Test connect(auto_start_feed=True) skips _start_live_feed on ChefSteps."""
+async def test_client_connect_starts_live_feed_on_chefsteps():
+    """Test connect(auto_start_feed=True) calls _start_live_feed on ChefSteps."""
     cs_device = BLEDevice("11:22:33:44:55:66", "ChefSteps Joule", {})
     cs_client = JouleClient(cs_device)
     cs_mock = create_mock_bleak_client("chefsteps")
@@ -841,9 +841,142 @@ async def test_client_connect_skips_live_feed_on_chefsteps():
         patch.object(cs_client, "_start_live_feed", AsyncMock()) as mock_feed,
     ):
         await cs_client.connect(auto_start_feed=True)
-        # Identify should have been called
         cs_client.identify.assert_called_once()
-        # BeginLiveFeed MUST NOT be called on ChefSteps!
-        mock_feed.assert_not_called()
+        mock_feed.assert_called_once()
 
     await cs_client.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_client_stop_cook_tolerates_invalid_state():
+    """Test stop_cook treats CS_ERROR_INVALID_STATE as success."""
+    cs_device = BLEDevice("11:22:33:44:55:66", "ChefSteps Joule", {})
+    cs_client = JouleClient(cs_device)
+    cs_mock = create_mock_bleak_client("chefsteps")
+
+    async def fake_write(char, data, response=False):
+        reply = joule_pb2.StreamMessage()
+        reply.stopCirculatorReply.result = joule_pb2.CS_ERROR_INVALID_STATE
+        cs_mock.read_gatt_char.return_value = reply.SerializeToString()
+        cs_client._handle_notification(MagicMock(), bytearray([1]))
+
+    cs_mock.write_gatt_char.side_effect = fake_write
+
+    with patch(
+        "joule_ble.client.establish_connection",
+        AsyncMock(return_value=cs_mock),
+    ):
+        await cs_client.connect(auto_start_feed=False)
+
+    # Should not raise JouleCommandError
+    await cs_client.stop_cook()
+    assert cs_client.state.program_step == CookState.IDLE
+    await cs_client.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_client_clear_errors_tolerates_invalid_state_and_internal():
+    """Test clear_errors treats invalid state and internal errors as success."""
+    cs_device = BLEDevice("11:22:33:44:55:66", "ChefSteps Joule", {})
+    cs_client = JouleClient(cs_device)
+    cs_mock = create_mock_bleak_client("chefsteps")
+
+    result_code = joule_pb2.CS_ERROR_INVALID_STATE
+
+    async def fake_write(char, data, response=False):
+        reply = joule_pb2.StreamMessage()
+        reply.clearErrorReply.result = result_code
+        cs_mock.read_gatt_char.return_value = reply.SerializeToString()
+        cs_client._handle_notification(MagicMock(), bytearray([1]))
+
+    cs_mock.write_gatt_char.side_effect = fake_write
+
+    with patch(
+        "joule_ble.client.establish_connection",
+        AsyncMock(return_value=cs_mock),
+    ):
+        await cs_client.connect(auto_start_feed=False)
+
+    # Should not raise for CS_ERROR_INVALID_STATE
+    await cs_client.clear_errors()
+
+    # Should not raise for CS_ERROR_INTERNAL
+    result_code = joule_pb2.CS_ERROR_INTERNAL
+    await cs_client.clear_errors()
+
+    await cs_client.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_keepalive_concurrency_during_pending_reply():
+    """Test KeepAlive writes succeed without blocking while awaiting reply."""
+    cs_device = BLEDevice("11:22:33:44:55:66", "ChefSteps Joule", {})
+    cs_client = JouleClient(cs_device)
+    cs_mock = create_mock_bleak_client("chefsteps")
+
+    written_types = []
+
+    async def fake_write(char, data, response=False):
+        msg = joule_pb2.StreamMessage()
+        msg.ParseFromString(bytes(data))
+        if msg.HasField("startKeyExchangeRequest"):
+            written_types.append("startKeyExchange")
+            # Do NOT fulfill reply immediately; simulate user waiting to press button
+        elif msg.HasField("keepAlive"):
+            written_types.append("keepAlive")
+
+    cs_mock.write_gatt_char.side_effect = fake_write
+
+    with patch(
+        "joule_ble.client.establish_connection",
+        AsyncMock(return_value=cs_mock),
+    ):
+        await cs_client.connect(auto_start_feed=False)
+
+    # Launch start_key_exchange in background
+    exchange_task = asyncio.create_task(cs_client.start_key_exchange(timeout=2.0))
+    await asyncio.sleep(0.05)
+    assert "startKeyExchange" in written_types
+
+    # While exchange_task is pending, send_keep_alive must succeed without deadlocking
+    await cs_client.send_keep_alive()
+    assert "keepAlive" in written_types
+
+    # Cleanly fulfill the reply to let exchange_task finish
+    reply = joule_pb2.StreamMessage()
+    reply.startKeyExchangeReply.result = joule_pb2.CS_SUCCESS
+    reply.startKeyExchangeReply.secretKey = b"\x01\x02\x03\x04\x05\x06\x07\x08"
+    cs_client._resolve_pending_reply("startKeyExchangeReply", reply)
+
+    # Note: start_key_exchange calls authenticate() immediately with the secret key,
+    # so we also resolve submitKeyReply
+    auth_reply = joule_pb2.StreamMessage()
+    auth_reply.submitKeyReply.result = joule_pb2.CS_SUCCESS
+    cs_client._resolve_pending_reply("submitKeyReply", auth_reply)
+
+    auth = await exchange_task
+    assert auth.secret_key == b"\x01\x02\x03\x04\x05\x06\x07\x08"
+    await cs_client.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_circulator_data_point_partial_fields():
+    """Test that incoming partial CirculatorDataPoint preserves existing fields."""
+    device = BLEDevice("11:22:33:44:55:66", "ChefSteps Joule", {})
+    client = JouleClient(device)
+
+    # Initial state with some values
+    client._state.bath_temp_c = 55.0
+    client._state.motor_rpm = 1200
+
+    # Partial datapoint only containing bathTemp and programStep
+    dp = joule_pb2.CirculatorDataPoint()
+    dp.bathTemp = 58.5
+    dp.programStep = joule_pb2.COOK
+
+    client._handle_circulator_data_point(dp)
+
+    assert client.state.bath_temp_c == 58.5
+    assert client.state.program_step == CookState.COOKING
+    # motor_rpm must not have been overwritten with 0
+    assert client.state.motor_rpm == 1200
