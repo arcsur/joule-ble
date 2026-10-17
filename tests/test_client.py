@@ -719,3 +719,111 @@ async def test_pair_or_authenticate_chefsteps_skips_key_exchange():
     auth = await cs_client.pair_or_authenticate()
     assert auth is not None
     assert auth.secret_key is None
+
+
+@pytest.mark.asyncio
+async def test_client_chefsteps_keepalive_sent():
+    """Test send_keep_alive writes KeepAlive StreamMessage to ChefSteps stream."""
+    cs_device = BLEDevice("11:22:33:44:55:66", "ChefSteps Joule", {})
+    cs_client = JouleClient(cs_device)
+    cs_mock = create_mock_bleak_client("chefsteps")
+
+    written_packets = []
+
+    async def fake_write(char, data, response=False):
+        c_uuid = char.uuid if hasattr(char, "uuid") else char
+        written_packets.append((c_uuid, bytes(data)))
+
+    cs_mock.write_gatt_char.side_effect = fake_write
+
+    with patch(
+        "joule_ble.client.establish_connection",
+        AsyncMock(return_value=cs_mock),
+    ):
+        await cs_client.connect(auto_start_feed=False)
+
+    await cs_client.send_keep_alive()
+
+    assert len(written_packets) >= 1
+    char_uuid, raw_bytes = written_packets[-1]
+    assert char_uuid == UUID_CHEFSTEP_STREAM_WRITE
+
+    msg = joule_pb2.StreamMessage()
+    msg.ParseFromString(raw_bytes)
+    assert msg.HasField("keepAlive")
+    await cs_client.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_client_start_cook_circulator_program_fields():
+    """Test that start_cook only populates active CirculatorProgram fields."""
+    cs_device = BLEDevice("11:22:33:44:55:66", "ChefSteps Joule", {})
+    cs_client = JouleClient(cs_device)
+    cs_mock = create_mock_bleak_client("chefsteps")
+
+    captured_requests = []
+
+    async def fake_write(char, data, response=False):
+        msg = joule_pb2.StreamMessage()
+        try:
+            msg.ParseFromString(bytes(data))
+            if msg.HasField("startProgramRequest"):
+                captured_requests.append(msg.startProgramRequest)
+                reply = joule_pb2.StreamMessage()
+                reply.startProgramReply.result = joule_pb2.CS_SUCCESS
+                cs_mock.read_gatt_char.return_value = reply.SerializeToString()
+                cs_client._handle_notification(MagicMock(), bytearray([1]))
+        except Exception:
+            pass
+
+    cs_mock.write_gatt_char.side_effect = fake_write
+
+    with patch(
+        "joule_ble.client.establish_connection",
+        AsyncMock(return_value=cs_mock),
+    ):
+        await cs_client.connect(auto_start_feed=False)
+
+    # 1. Manual cook without timer or delayed start
+    await cs_client.start_cook(target_temp_c=56.0)
+    assert len(captured_requests) == 1
+    prog = captured_requests[0].circulatorProgram
+    assert prog.setPoint == 56.0
+    assert prog.programType == joule_pb2.MANUAL
+    assert not prog.HasField("cookTime")
+    assert not prog.HasField("delayedStart")
+    assert not prog.HasField("holdingTemperature")
+
+    # 2. Cook with timer
+    await cs_client.start_cook(target_temp_c=60.0, cook_time_seconds=1800)
+    assert len(captured_requests) == 2
+    prog2 = captured_requests[1].circulatorProgram
+    assert prog2.setPoint == 60.0
+    assert prog2.cookTime == 1800
+    assert not prog2.HasField("delayedStart")
+    assert not prog2.HasField("holdingTemperature")
+    await cs_client.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_client_connect_skips_live_feed_on_chefsteps():
+    """Test connect(auto_start_feed=True) skips _start_live_feed on ChefSteps."""
+    cs_device = BLEDevice("11:22:33:44:55:66", "ChefSteps Joule", {})
+    cs_client = JouleClient(cs_device)
+    cs_mock = create_mock_bleak_client("chefsteps")
+
+    with (
+        patch(
+            "joule_ble.client.establish_connection",
+            AsyncMock(return_value=cs_mock),
+        ),
+        patch.object(cs_client, "identify", AsyncMock()),
+        patch.object(cs_client, "_start_live_feed", AsyncMock()) as mock_feed,
+    ):
+        await cs_client.connect(auto_start_feed=True)
+        # Identify should have been called
+        cs_client.identify.assert_called_once()
+        # BeginLiveFeed MUST NOT be called on ChefSteps!
+        mock_feed.assert_not_called()
+
+    await cs_client.disconnect()

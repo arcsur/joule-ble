@@ -34,7 +34,21 @@
 ### 3. ChefSteps Radio Settle Delay
 - After subscribing to `700b4325` notifications on ChefSteps devices, allow a 500ms delay (`asyncio.sleep(0.5)`) for the BLE radio to settle before issuing the initial `IdentifyCirculatorRequest`.
 
-### 4. Running Tests & Quality Checks
+### 4. ChefSteps KeepAlive & Idle Connection Maintenance
+- ChefSteps Original Joule peripheral firmware runs an idle watchdog that disconnects the BLE connection after ~10-15 seconds of inactivity.
+- Send a periodic `KeepAlive` message (`StreamMessage.keepAlive`) every 3 seconds to `700b4322` without waiting for a reply to maintain the connection.
+- Cancel the keepalive task cleanly upon disconnection.
+
+### 5. Never Send BeginLiveFeed to ChefSteps Devices
+- `BeginLiveFeed` (`feedType=COOK_DATA`, field 70) is exclusive to Breville FreeRTOS (`CS30001`).
+- ChefSteps Original Joule firmware does not implement `BeginLiveFeed`. Sending it stalls the BLE stream for 5 seconds waiting for `beginLiveFeedReply` and destabilizes subsequent commands.
+- Telemetry on ChefSteps streams automatically via notifications on `700b4325` when subscribed or during active cooking.
+
+### 6. Atomic Stream Transaction Locking & Clean CirculatorProgram Fields
+- The request-reply cycle on `700b4322` / `700b4323` must be serialized under a single transaction lock (`_stream_lock`). Never issue pipelined writes while awaiting a command reply.
+- When constructing `StartProgramRequest`, only populate optional fields (`cookTime`, `delayedStart`, `holdingTemperature`) when active/non-zero. Explicitly setting `holdingTemperature=0.0` or `delayedStart=0` can cause firmware validation failure.
+
+### 7. Running Tests & Quality Checks
 ```bash
 # Lint & format
 uv run ruff check src tests

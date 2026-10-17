@@ -16,6 +16,7 @@ from bleak_retry_connector import establish_connection
 from google.protobuf.message import DecodeError
 
 from .const import (
+    CHEFSTEPS_KEEPALIVE_INTERVAL,
     DEFAULT_ATT_PAYLOAD_SIZE,
     DEFAULT_COMMAND_TIMEOUT,
     DEFAULT_CONNECT_TIMEOUT,
@@ -97,6 +98,7 @@ class JouleClient:
         self._callbacks: list[Callable[[JouleState], None]] = []
 
         self._write_lock = asyncio.Lock()
+        self._stream_lock = asyncio.Lock()
         self._read_lock = asyncio.Lock()
         self._response_futures: dict[str, asyncio.Future[joule_pb2.StreamMessage]] = {}
         self._rx_buffer = bytearray()
@@ -104,6 +106,7 @@ class JouleClient:
         self._stream_handle: int = DEFAULT_STREAM_HANDLE
         self._sender_address: bytes = DEFAULT_SENDER_ADDRESS
         self._recipient_address: bytes = norm_recipient
+        self._keepalive_task: asyncio.Task[None] | None = None
 
     @property
     def is_connected(self) -> bool:
@@ -181,6 +184,7 @@ class JouleClient:
 
     def _handle_disconnect(self, client: BleakClient) -> None:
         """Handle unexpected BLE disconnection."""
+        self._stop_keepalive_task()
         _LOGGER.warning("Disconnected from Joule (%s)", self._ble_device.address)
         self._state.connected = False
         self._cleanup_pending_futures(
@@ -266,16 +270,26 @@ class JouleClient:
                 _LOGGER.debug("Initial ChefSteps stream read skipped/failed: %s", err)
 
         if auto_start_feed:
-            # Request identification and start live feed
+            # Request identification
             try:
                 await self.identify()
             except Exception as err:
                 _LOGGER.debug("Identify query failed or skipped: %s", err)
 
-            try:
-                await self._start_live_feed()
-            except Exception as err:
-                _LOGGER.warning("Could not automatically start live cook feed: %s", err)
+            # BeginLiveFeed is a Breville FreeRTOS-only command.
+            # ChefSteps Original Joule streams telemetry automatically when subscribed
+            # or during an active cook.
+            if self._is_breville_profile:
+                try:
+                    await self._start_live_feed()
+                except Exception as err:
+                    _LOGGER.warning(
+                        "Could not automatically start live cook feed: %s", err
+                    )
+
+        # ChefSteps requires periodic KeepAlive to prevent idle disconnect
+        if not self._is_breville_profile:
+            self._start_keepalive_task()
 
     async def _read_static_device_info(self) -> None:
         """Attempt to read static serial or version characteristics."""
@@ -485,12 +499,12 @@ class JouleClient:
         payload = msg.SerializeToString()
         reply_future: asyncio.Future[joule_pb2.StreamMessage] | None = None
 
-        if expected_reply:
-            loop = asyncio.get_running_loop()
-            reply_future = loop.create_future()
-            self._response_futures[expected_reply] = reply_future
+        async with self._stream_lock:
+            if expected_reply:
+                loop = asyncio.get_running_loop()
+                reply_future = loop.create_future()
+                self._response_futures[expected_reply] = reply_future
 
-        async with self._write_lock:
             # Stream messages on both ChefSteps (700b4322) and Breville
             # (c6f2d9e3-..09) are sent as complete protobuf StreamMessages using
             # Write Request (WRITE_TYPE_DEFAULT, response=True). Manual slicing by MTU
@@ -523,26 +537,63 @@ class JouleClient:
                     f"Failed to write BLE stream message: {err}"
                 ) from err
 
-        if not reply_future:
-            return None
+            if not reply_future:
+                return None
 
+            try:
+                return await asyncio.wait_for(
+                    asyncio.shield(reply_future), timeout=timeout
+                )
+            except TimeoutError as err:
+                # Fallback for ChefSteps: direct read on read characteristic
+                if not self._is_breville_profile and self._read_char:
+                    try:
+                        await self._read_chefsteps_stream()
+                        if reply_future.done() and not reply_future.cancelled():
+                            return reply_future.result()
+                    except Exception:
+                        pass
+
+                if expected_reply is not None:
+                    self._response_futures.pop(expected_reply, None)
+                raise JouleTimeoutError(
+                    f"Timed out waiting for {expected_reply} after {timeout}s"
+                ) from err
+
+    def _start_keepalive_task(self) -> None:
+        """Start periodic KeepAlive background loop for ChefSteps Original Joule."""
+        self._stop_keepalive_task()
+        self._keepalive_task = asyncio.create_task(self._keepalive_loop())
+
+    def _stop_keepalive_task(self) -> None:
+        """Stop periodic KeepAlive background loop."""
+        if self._keepalive_task and not self._keepalive_task.done():
+            self._keepalive_task.cancel()
+        self._keepalive_task = None
+
+    async def _keepalive_loop(self) -> None:
+        """Periodically send KeepAlive to ChefSteps Joule to maintain connection."""
+        while self.is_connected:
+            try:
+                await asyncio.sleep(CHEFSTEPS_KEEPALIVE_INTERVAL)
+                if not self.is_connected:
+                    break
+                await self.send_keep_alive()
+            except asyncio.CancelledError:
+                break
+            except Exception as err:
+                _LOGGER.debug("KeepAlive send error: %s", err)
+
+    async def send_keep_alive(self) -> None:
+        """Send a KeepAlive message to ChefSteps Original Joule."""
+        if not self.is_connected or self._is_breville_profile:
+            return
+        msg = joule_pb2.StreamMessage()
+        msg.keepAlive.CopyFrom(joule_pb2.KeepAlive())
         try:
-            return await asyncio.wait_for(asyncio.shield(reply_future), timeout=timeout)
-        except TimeoutError as err:
-            # Fallback for ChefSteps: direct read on read characteristic
-            if not self._is_breville_profile and self._read_char:
-                try:
-                    await self._read_chefsteps_stream()
-                    if reply_future.done() and not reply_future.cancelled():
-                        return reply_future.result()
-                except Exception:
-                    pass
-
-            if expected_reply is not None:
-                self._response_futures.pop(expected_reply, None)
-            raise JouleTimeoutError(
-                f"Timed out waiting for {expected_reply} after {timeout}s"
-            ) from err
+            await self._send_message(msg, expected_reply=None)
+        except Exception as err:
+            _LOGGER.debug("Failed to send KeepAlive: %s", err)
 
     async def _start_live_feed(self) -> None:
         """Send BeginLiveFeed request to start streaming cook telemetry."""
@@ -669,9 +720,12 @@ class JouleClient:
 
         prog = joule_pb2.CirculatorProgram()
         prog.setPoint = float(target_temp_c)
-        prog.cookTime = int(cook_time_seconds)
-        prog.delayedStart = int(delayed_start_seconds)
-        prog.holdingTemperature = float(holding_temp_c)
+        if cook_time_seconds > 0:
+            prog.cookTime = int(cook_time_seconds)
+        if delayed_start_seconds > 0:
+            prog.delayedStart = int(delayed_start_seconds)
+        if holding_temp_c >= MIN_TEMP_C:
+            prog.holdingTemperature = float(holding_temp_c)
         prog.programType = joule_pb2.MANUAL
 
         req = joule_pb2.StartProgramRequest()
@@ -691,7 +745,9 @@ class JouleClient:
                 )
 
         self._state.target_temp_c = round(target_temp_c, 2)
-        self._state.cook_time_seconds = cook_time_seconds
+        self._state.cook_time_seconds = (
+            cook_time_seconds if cook_time_seconds > 0 else None
+        )
         self._state.program_step = CookState.PRE_HEATING
         self._notify_listeners()
 
@@ -901,6 +957,7 @@ class JouleClient:
 
     async def disconnect(self) -> None:
         """Cleanly disconnect from the Joule."""
+        self._stop_keepalive_task()
         if self._client:
             try:
                 if self._notify_char:
