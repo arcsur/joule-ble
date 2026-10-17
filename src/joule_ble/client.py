@@ -270,6 +270,18 @@ class JouleClient:
                 _LOGGER.debug("Initial ChefSteps stream read skipped/failed: %s", err)
 
         if auto_start_feed:
+            # If secret key exists in auth_data, authenticate to verify proximity
+            if self._auth_data and (
+                self._auth_data.secret_key or self._auth_data.secret
+            ):
+                try:
+                    await self.authenticate(timeout=5.0)
+                    _LOGGER.debug("Authenticated successfully on connect")
+                except Exception as auth_err:
+                    _LOGGER.debug(
+                        "Authentication on connect skipped or failed: %s", auth_err
+                    )
+
             # Request identification
             try:
                 await self.identify()
@@ -722,11 +734,13 @@ class JouleClient:
         prog.setPoint = float(target_temp_c)
         if cook_time_seconds > 0:
             prog.cookTime = int(cook_time_seconds)
+            prog.programType = joule_pb2.AUTOMATIC
+        else:
+            prog.programType = joule_pb2.MANUAL
         if delayed_start_seconds > 0:
             prog.delayedStart = int(delayed_start_seconds)
         if holding_temp_c >= MIN_TEMP_C:
             prog.holdingTemperature = float(holding_temp_c)
-        prog.programType = joule_pb2.MANUAL
 
         req = joule_pb2.StartProgramRequest()
         req.circulatorProgram.CopyFrom(prog)
@@ -930,20 +944,21 @@ class JouleClient:
 
         secret = reply.startKeyExchangeReply.secretKey
         self._auth_data = JouleAuthData(secret_key=secret, secret=secret)
+        # Immediately submit received key to transition proximity state to verified
+        try:
+            await self.authenticate(secret_key=secret, timeout=5.0)
+            _LOGGER.debug("Proximity verified with circulator following key exchange")
+        except Exception as auth_err:
+            _LOGGER.debug(
+                "Immediate key submission post-exchange skipped or failed: %s",
+                auth_err,
+            )
         return self._auth_data
 
     async def pair_or_authenticate(
         self, timeout: float = DEFAULT_PAIR_TIMEOUT
     ) -> JouleAuthData:
         """Perform authenticated pairing / key exchange if required by firmware."""
-        if not self._is_breville_profile:
-            # ChefSteps Original Joule does not use key exchange authentication.
-            _LOGGER.debug(
-                "Skipping key exchange; ChefSteps Original Joule "
-                "does not use authentication"
-            )
-            return JouleAuthData()
-
         if self._auth_data and (self._auth_data.secret_key or self._auth_data.secret):
             try:
                 await self.authenticate(timeout=timeout)

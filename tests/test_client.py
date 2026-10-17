@@ -15,6 +15,7 @@ from joule_ble import (
     MIN_TEMP_C,
     CookState,
     ErrorState,
+    JouleAuthData,
     JouleClient,
     JouleCommandError,
     JouleModel,
@@ -704,11 +705,28 @@ async def test_client_write_response_modes():
 
 
 @pytest.mark.asyncio
-async def test_pair_or_authenticate_chefsteps_skips_key_exchange():
-    """Test pair_or_authenticate immediately succeeds for ChefSteps."""
+async def test_pair_or_authenticate_chefsteps_with_existing_key():
+    """Test pair_or_authenticate authenticates directly when secret_key exists."""
     cs_device = BLEDevice("11:22:33:44:55:66", "ChefSteps Joule", {})
-    cs_client = JouleClient(cs_device)
+    auth_data = JouleAuthData(secret_key=b"SAVED_KEY_123")
+    cs_client = JouleClient(cs_device, auth_data=auth_data)
     cs_mock = create_mock_bleak_client("chefsteps")
+
+    captured_requests = []
+
+    async def fake_write(char, data, response=False):
+        msg = joule_pb2.StreamMessage()
+        try:
+            msg.ParseFromString(bytes(data))
+            if msg.HasField("submitKeyRequest"):
+                captured_requests.append(msg.submitKeyRequest)
+                reply = joule_pb2.StreamMessage()
+                reply.submitKeyReply.result = joule_pb2.CS_SUCCESS
+                cs_client._resolve_pending_reply("submitKeyReply", reply)
+        except Exception:
+            pass
+
+    cs_mock.write_gatt_char.side_effect = fake_write
 
     with patch(
         "joule_ble.client.establish_connection",
@@ -718,7 +736,8 @@ async def test_pair_or_authenticate_chefsteps_skips_key_exchange():
 
     auth = await cs_client.pair_or_authenticate()
     assert auth is not None
-    assert auth.secret_key is None
+    assert auth.secret_key == b"SAVED_KEY_123"
+    assert len(captured_requests) >= 1
 
 
 @pytest.mark.asyncio
@@ -800,6 +819,7 @@ async def test_client_start_cook_circulator_program_fields():
     prog2 = captured_requests[1].circulatorProgram
     assert prog2.setPoint == 60.0
     assert prog2.cookTime == 1800
+    assert prog2.programType == joule_pb2.AUTOMATIC
     assert not prog2.HasField("delayedStart")
     assert not prog2.HasField("holdingTemperature")
     await cs_client.disconnect()

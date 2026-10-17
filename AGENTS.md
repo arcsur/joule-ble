@@ -10,7 +10,7 @@
    - **Stream Read (`700b4323`)**: GATT Read to retrieve incoming `StreamMessage` payload.
    - **Stream Subscribe (`700b4325`)**: Notifications act as alert triggers signaling new data is available on `700b4323`.
    - **File Transfer (`700b4326`)**: OTA firmware file transfer (`WRITE_TYPE_NO_RESPONSE`, `response=False`).
-   - **Authentication**: **NO KEY EXCHANGE**. Identification and control commands are open once connected. Never send `StartKeyExchangeRequest` or `SubmitKeyRequest` to ChefSteps devices (they will be ignored and time out).
+   - **Authentication & Proximity**: Identification (`IdentifyCirculatorRequest`) and LED commands are open without authentication. However, state-changing commands (`StartProgramRequest`) require the circulator to be in `verified` proximity state. Initial key exchange (`StartKeyExchangeRequest`) requires the user to physically press the Joule's top button within the timeout period; upon confirmation the circulator replies with `StartKeyExchangeReply` containing a 64-bit secret key. The client immediately submits this key via `SubmitKeyRequest`. On subsequent reconnections, the client simply submits the stored secret key via `SubmitKeyRequest` (no button press required).
 
 2. **Breville Joule Turbo (`CS30001`, Hardware `CS30001`)**
    - **Service UUID**: `c6f2d9e3-49e7-4125-9014-bfc6d669ff00`
@@ -46,7 +46,10 @@
 
 ### 6. Atomic Stream Transaction Locking & Clean CirculatorProgram Fields
 - The request-reply cycle on `700b4322` / `700b4323` must be serialized under a single transaction lock (`_stream_lock`). Never issue pipelined writes while awaiting a command reply.
-- When constructing `StartProgramRequest`, only populate optional fields (`cookTime`, `delayedStart`, `holdingTemperature`) when active/non-zero. Explicitly setting `holdingTemperature=0.0` or `delayedStart=0` can cause firmware validation failure.
+- When constructing `StartProgramRequest`:
+  - If `cookTime` is active/positive (>0), `programType` **MUST** be set to `AUTOMATIC` (`1`).
+  - If `cookTime` is 0 or not active (manual cook), `programType` **MUST** be set to `MANUAL` (`0`), and `cookTime` **MUST NOT** be serialized into the message.
+  - Only populate optional fields (`delayedStart`, `holdingTemperature`) when active/non-zero. Explicitly setting `holdingTemperature=0.0` or `delayedStart=0` can cause firmware validation failure.
 
 ### 7. Running Tests & Quality Checks
 ```bash
