@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-__version__ = "0.1.0a22"
+__version__ = "1.0.0"
 
 from .client import JouleClient
 from .const import (
