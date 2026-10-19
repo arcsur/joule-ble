@@ -110,6 +110,7 @@ class JouleClient:
         self._keepalive_task: asyncio.Task[None] | None = None
         self._latest_feed_id: int = 0
         self._latest_seq_num: int = 0
+        self._feed_ready_event: asyncio.Event = asyncio.Event()
 
     @property
     def latest_feed_id(self) -> int:
@@ -467,6 +468,7 @@ class JouleClient:
     def _handle_circulator_data_point(self, dp: joule_pb2.CirculatorDataPoint) -> None:
         """Update internal state from incoming CirculatorDataPoint."""
         self._state.connected = True
+        self._feed_ready_event.set()
         if dp.HasField("feedId"):
             self._latest_feed_id = dp.feedId
         if dp.HasField("sequenceNumber"):
@@ -823,6 +825,17 @@ class JouleClient:
             # The firmware requires programType=MANUAL (0) and NO cookTime.
             # Local control manages timers in software.
             prog.programType = joule_pb2.MANUAL
+            if not self._latest_feed_id or not self._latest_seq_num:
+                _LOGGER.debug(
+                    "Waiting up to 1.5s for initial live CirculatorDataPoint "
+                    "to acquire feed session..."
+                )
+                try:
+                    await asyncio.wait_for(self._feed_ready_event.wait(), timeout=1.5)
+                except TimeoutError:
+                    _LOGGER.debug(
+                        "Timed out waiting for initial CirculatorDataPoint; continuing"
+                    )
         else:
             if cook_time_seconds > 0:
                 prog.cookTime = int(cook_time_seconds)
@@ -837,8 +850,9 @@ class JouleClient:
         req = joule_pb2.StartProgramRequest()
         req.circulatorProgram.CopyFrom(prog)
         if not self._is_breville_profile:
-            if self._latest_feed_id:
-                req.feedId = self._latest_feed_id
+            req.feedId = (
+                self._latest_feed_id if self._latest_feed_id else joule_pb2.COOK_DATA
+            )
             if self._latest_seq_num:
                 req.sequenceNumber = self._latest_seq_num
 
@@ -941,6 +955,10 @@ class JouleClient:
         req = joule_pb2.ClearErrorRequest()
 
         msg = joule_pb2.StreamMessage()
+        if not self._is_breville_profile:
+            msg.handle = random.randint(1, 2**31 - 1)
+            msg.senderAddress = b""
+            msg.recipientAddress = b""
         msg.clearErrorRequest.CopyFrom(req)
 
         reply = await self._send_message(
@@ -948,12 +966,13 @@ class JouleClient:
         )
         if reply:
             res = reply.clearErrorReply.result
-            # Code 8 (CS_ERROR_INVALID_STATE) or 3 (CS_ERROR_INTERNAL) indicates
-            # no active error to clear
+            # Code 8 (CS_ERROR_INVALID_STATE), 3 (CS_ERROR_INTERNAL),
+            # or 5 (CS_ERROR_NOT_FOUND) indicates no active error to clear
             if res not in (
                 joule_pb2.CS_SUCCESS,
                 joule_pb2.CS_ERROR_INVALID_STATE,
                 joule_pb2.CS_ERROR_INTERNAL,
+                joule_pb2.CS_ERROR_NOT_FOUND,
             ):
                 raise JouleCommandError(
                     f"Clear error failed with code {res}", result_code=res
@@ -969,6 +988,10 @@ class JouleClient:
         req = joule_pb2.DropFoodRequest()
 
         msg = joule_pb2.StreamMessage()
+        if not self._is_breville_profile:
+            msg.handle = random.randint(1, 2**31 - 1)
+            msg.senderAddress = b""
+            msg.recipientAddress = b""
         msg.dropFoodRequest.CopyFrom(req)
 
         reply = await self._send_message(
@@ -1117,5 +1140,8 @@ class JouleClient:
                 self._read_char = None
 
         self._state.connected = False
+        self._feed_ready_event.clear()
+        self._latest_feed_id = 0
+        self._latest_seq_num = 0
         self._cleanup_pending_futures(JouleConnectionError("Client disconnected"))
         self._notify_listeners()

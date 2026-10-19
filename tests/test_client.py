@@ -420,9 +420,9 @@ async def test_client_chefsteps_empty_notification_triggers_read():
 @pytest.mark.asyncio
 async def test_client_send_message_sets_envelope_headers():
     """Test outgoing StreamMessage envelopes include required headers."""
-    device = BLEDevice("11:22:33:44:55:66", "Joule CS100", {})
+    device = BLEDevice("11:22:33:44:55:66", "Joule Turbo", {})
     client = JouleClient(device, recipient_address=b"MYJOULE1")
-    mock_bleak = create_mock_bleak_client("chefsteps")
+    mock_bleak = create_mock_bleak_client("breville")
 
     captured_chunks = []
 
