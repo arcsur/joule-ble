@@ -825,6 +825,33 @@ class JouleClient:
             # The firmware requires programType=MANUAL (0) and NO cookTime.
             # Local control manages timers in software.
             prog.programType = joule_pb2.MANUAL
+
+            # Pre-flight state hygiene: ChefSteps firmware rejects StartProgramRequest
+            # with CS_ERROR_INVALID_STATE (code 8) if the circulator is non-idle
+            # (e.g. already cooking or halted in CookState.ERROR). Stop & clear.
+            had_error = self._state.has_error
+            was_non_idle = self._state.program_step != CookState.IDLE
+
+            if was_non_idle:
+                _LOGGER.debug(
+                    "Circulator in step %s before start_cook; stopping prior program",
+                    self._state.program_step.value,
+                )
+                try:
+                    await self.stop_cook()
+                except Exception as err:
+                    _LOGGER.debug("Pre-start stop_cook ignored: %s", err)
+
+            if had_error:
+                _LOGGER.debug(
+                    "Active error condition (%s) before start_cook; clearing errors",
+                    self._state.error_state.value,
+                )
+                try:
+                    await self.clear_errors()
+                except Exception as err:
+                    _LOGGER.debug("Pre-start clear_errors ignored: %s", err)
+
             if not self._latest_feed_id or not self._latest_seq_num:
                 _LOGGER.debug(
                     "Waiting up to 1.5s for initial live CirculatorDataPoint "
@@ -868,6 +895,29 @@ class JouleClient:
         )
         if reply:
             res = reply.startProgramReply.result
+            if (
+                res == joule_pb2.CS_ERROR_INVALID_STATE
+                and not self._is_breville_profile
+            ):
+                _LOGGER.warning(
+                    "Start cook returned CS_ERROR_INVALID_STATE; attempting recovery "
+                    "by stopping circulator"
+                )
+                try:
+                    await self.stop_cook()
+                    if self._latest_seq_num:
+                        req.sequenceNumber = self._latest_seq_num
+                    msg.handle = random.randint(1, 2**31 - 1)
+                    retry_reply = await self._send_message(
+                        msg,
+                        expected_reply="startProgramReply",
+                        timeout=DEFAULT_COMMAND_TIMEOUT,
+                    )
+                    if retry_reply:
+                        res = retry_reply.startProgramReply.result
+                except Exception as err:
+                    _LOGGER.debug("Start cook recovery retry failed: %s", err)
+
             if res != joule_pb2.CS_SUCCESS:
                 raise JouleCommandError(
                     f"Start cook failed with code {res}", result_code=res
@@ -887,6 +937,12 @@ class JouleClient:
                 f"Target temperature {target_temp_c}°C must be between "
                 f"{MIN_TEMP_C}°C and {MAX_TEMP_C}°C"
             )
+
+        # If already set to this target temperature while cooking, avoid redundant write
+        if self._state.is_cooking and self._state.target_temp_c == round(
+            target_temp_c, 2
+        ):
+            return
 
         # If not active, use start_cook
         if not self._state.is_cooking:
@@ -981,6 +1037,8 @@ class JouleClient:
         self._state.error_state = ErrorState.NO_ERROR
         self._state.low_water = False
         self._state.motor_fault = False
+        if self._state.program_step == CookState.ERROR:
+            self._state.program_step = CookState.IDLE
         self._notify_listeners()
 
     async def drop_food(self) -> None:

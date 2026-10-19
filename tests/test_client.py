@@ -1124,3 +1124,139 @@ async def test_client_dual_resolution_start_and_stop():
     assert cs_client.state.program_step == CookState.IDLE
 
     await cs_client.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_client_start_cook_preflight_resets_errored_state():
+    """Test start_cook clears errors and stops prior program if in error."""
+    cs_device = BLEDevice("11:22:33:44:55:66", "ChefSteps Joule", {})
+    cs_client = JouleClient(cs_device)
+    cs_mock = create_mock_bleak_client("chefsteps")
+
+    captured_requests = []
+
+    async def fake_write(char, data, response=False):
+        try:
+            msg = joule_pb2.StreamMessage()
+            msg.ParseFromString(data)
+            if msg.HasField("clearErrorRequest"):
+                captured_requests.append("clearErrorRequest")
+                reply = joule_pb2.StreamMessage()
+                reply.clearErrorReply.result = joule_pb2.CS_SUCCESS
+                cs_mock.read_gatt_char.return_value = reply.SerializeToString()
+                cs_client._handle_notification(MagicMock(), bytearray([1]))
+            elif msg.HasField("stopCirculatorRequest"):
+                captured_requests.append("stopCirculatorRequest")
+                reply = joule_pb2.StreamMessage()
+                reply.stopCirculatorReply.result = joule_pb2.CS_SUCCESS
+                cs_mock.read_gatt_char.return_value = reply.SerializeToString()
+                cs_client._handle_notification(MagicMock(), bytearray([1]))
+            elif msg.HasField("startProgramRequest"):
+                captured_requests.append("startProgramRequest")
+                reply = joule_pb2.StreamMessage()
+                reply.startProgramReply.result = joule_pb2.CS_SUCCESS
+                cs_mock.read_gatt_char.return_value = reply.SerializeToString()
+                cs_client._handle_notification(MagicMock(), bytearray([1]))
+        except Exception:
+            pass
+
+    cs_mock.write_gatt_char.side_effect = fake_write
+
+    with patch(
+        "joule_ble.client.establish_connection",
+        AsyncMock(return_value=cs_mock),
+    ):
+        await cs_client.connect(auto_start_feed=False)
+
+    # Put client in ERROR state
+    cs_client._state.program_step = CookState.ERROR
+    cs_client._state.error_state = ErrorState.SOFT_ERROR
+    cs_client._state.low_water = True
+    cs_client._feed_ready_event.set()
+
+    await cs_client.start_cook(target_temp_c=55.0)
+
+    assert "clearErrorRequest" in captured_requests
+    assert "stopCirculatorRequest" in captured_requests
+    assert "startProgramRequest" in captured_requests
+    assert cs_client.state.is_cooking
+    assert cs_client.state.program_step == CookState.PRE_HEATING
+    assert not cs_client.state.has_error
+
+    await cs_client.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_client_start_cook_retries_on_invalid_state():
+    """Test start_cook recovers by stopping circulator and retrying on code 8."""
+    cs_device = BLEDevice("11:22:33:44:55:66", "ChefSteps Joule", {})
+    cs_client = JouleClient(cs_device)
+    cs_mock = create_mock_bleak_client("chefsteps")
+
+    start_count = 0
+    stop_called = False
+
+    async def fake_write(char, data, response=False):
+        nonlocal start_count, stop_called
+        try:
+            msg = joule_pb2.StreamMessage()
+            msg.ParseFromString(data)
+            if msg.HasField("stopCirculatorRequest"):
+                stop_called = True
+                reply = joule_pb2.StreamMessage()
+                reply.stopCirculatorReply.result = joule_pb2.CS_SUCCESS
+                cs_mock.read_gatt_char.return_value = reply.SerializeToString()
+                cs_client._handle_notification(MagicMock(), bytearray([1]))
+            elif msg.HasField("startProgramRequest"):
+                start_count += 1
+                reply = joule_pb2.StreamMessage()
+                if start_count == 1:
+                    reply.startProgramReply.result = joule_pb2.CS_ERROR_INVALID_STATE
+                else:
+                    reply.startProgramReply.result = joule_pb2.CS_SUCCESS
+                cs_mock.read_gatt_char.return_value = reply.SerializeToString()
+                cs_client._handle_notification(MagicMock(), bytearray([1]))
+        except Exception:
+            pass
+
+    cs_mock.write_gatt_char.side_effect = fake_write
+
+    with patch(
+        "joule_ble.client.establish_connection",
+        AsyncMock(return_value=cs_mock),
+    ):
+        await cs_client.connect(auto_start_feed=False)
+
+    cs_client._feed_ready_event.set()
+    await cs_client.start_cook(target_temp_c=52.0)
+
+    assert start_count == 2
+    assert stop_called
+    assert cs_client.state.is_cooking
+    assert cs_client.state.target_temp_c == 52.0
+
+    await cs_client.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_client_set_temperature_avoids_redundant_write():
+    """Test set_temperature does not issue BLE write when setpoint matches current."""
+    cs_device = BLEDevice("11:22:33:44:55:66", "ChefSteps Joule", {})
+    cs_client = JouleClient(cs_device)
+    cs_mock = create_mock_bleak_client("chefsteps")
+
+    with patch(
+        "joule_ble.client.establish_connection",
+        AsyncMock(return_value=cs_mock),
+    ):
+        await cs_client.connect(auto_start_feed=False)
+
+    cs_client._state.program_step = CookState.COOKING
+    cs_client._state.target_temp_c = 55.0
+
+    # Calling with the same temperature should return immediately without writing
+    cs_mock.write_gatt_char.reset_mock()
+    await cs_client.set_temperature(55.0)
+    cs_mock.write_gatt_char.assert_not_called()
+
+    await cs_client.disconnect()
