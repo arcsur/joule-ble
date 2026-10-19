@@ -75,7 +75,7 @@ class JouleClient:
         self._write_char: BleakGATTCharacteristic | None = None
         self._notify_char: BleakGATTCharacteristic | None = None
         self._read_char: BleakGATTCharacteristic | None = None
-        self._is_breville_profile: bool = False
+        self._is_breville_profile: bool = model == JouleModel.JOULE_TURBO
 
         norm_recipient: bytes = DEFAULT_RECIPIENT_ADDRESS
         if recipient_address:

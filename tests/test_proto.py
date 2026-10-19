@@ -92,3 +92,32 @@ def test_model_enum_conversions():
     assert TurboCookState.from_proto(joule_pb2.NO_TURBO) == TurboCookState.NO_TURBO
     turbo_on = joule_pb2.TURBO_ENABLED
     assert TurboCookState.from_proto(turbo_on) == TurboCookState.TURBO_ENABLED
+
+
+def test_joule_state_properties():
+    """Test JouleState computed helper properties."""
+    from joule_ble.models import JouleState
+
+    state = JouleState()
+    assert state.is_cooking is False
+    assert state.is_heating is False
+
+    state.program_step = CookState.PRE_HEATING
+    assert state.is_cooking is True
+    assert state.is_heating is True
+
+    state.program_step = CookState.WAITING_FOR_FOOD
+    assert state.is_cooking is True
+    assert state.is_heating is True
+
+    state.program_step = CookState.COOKING
+    assert state.is_cooking is True
+    assert state.is_heating is True
+
+    state.program_step = CookState.WAITING_FOR_REMOVE_FOOD
+    assert state.is_cooking is True
+    assert state.is_heating is False
+
+    state.program_step = CookState.IDLE
+    assert state.is_cooking is False
+    assert state.is_heating is False

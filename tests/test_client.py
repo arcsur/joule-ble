@@ -1260,3 +1260,16 @@ async def test_client_set_temperature_avoids_redundant_write():
     cs_mock.write_gatt_char.assert_not_called()
 
     await cs_client.disconnect()
+
+
+def test_client_is_breville_profile_init():
+    """Test is_breville_profile initialization based on JouleModel."""
+    device = BLEDevice("11:22:33:44:55:66", "Joule", {})
+    client_default = JouleClient(device)
+    assert client_default.is_breville_profile is False
+
+    client_cs = JouleClient(device, model=JouleModel.ORIGINAL_JOULE)
+    assert client_cs.is_breville_profile is False
+
+    client_turbo = JouleClient(device, model=JouleModel.JOULE_TURBO)
+    assert client_turbo.is_breville_profile is True

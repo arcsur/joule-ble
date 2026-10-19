@@ -180,8 +180,12 @@ class JouleState:
 
     @property
     def is_heating(self) -> bool:
-        """Return True if heater is actively warming water."""
-        return self.program_step == CookState.PRE_HEATING
+        """Return True if heater is warming or maintaining water temperature."""
+        return self.program_step in (
+            CookState.PRE_HEATING,
+            CookState.WAITING_FOR_FOOD,
+            CookState.COOKING,
+        )
 
     @property
     def has_error(self) -> bool:
